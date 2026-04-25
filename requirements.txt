@@ -3,3 +3,6 @@ pandas
 numpy
 requests
 matplotlib
+pytz
+Pillow
+openpyxl
