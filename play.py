@@ -2,13 +2,17 @@ import streamlit as st
 import requests
 import pandas as pd
 import time
+import io
+from openpyxl import Workbook
+from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
+from openpyxl.utils import get_column_letter
 
 # ──────────────────────────────────────────────
 # CONFIG
 # ──────────────────────────────────────────────
 DHAN_ACCESS_TOKEN = "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzUxMiJ9.eyJwX2lwIjoiIiwic19pcCI6IiIsImlzcyI6ImRoYW4iLCJwYXJ0bmVySWQiOiIiLCJleHAiOjE3NzcyMTY0ODYsImlhdCI6MTc3NzEzMDA4NiwidG9rZW5Db25zdW1lclR5cGUiOiJTRUxGIiwid2ViaG9va1VybCI6Imh0dHBzOi8vd2ViLmRoYW4uY28vaW5kZXgvcHJvZmlsZSIsImRoYW5DbGllbnRJZCI6IjExMDgwNjYwOTQifQ._lSblFtH3Qgd-C7fr8rWR7Cv1xNZW0vsORGfnAmkmvHbbMpE8WWiFFW6zvKN4yd7HN7GIZYyRQANtJycX8PLzQ"
 DHAN_CLIENT_ID    = "1108066094"
-TELEGRAM_TOKEN   = "8243416633:AAFjISDBXvhqGsM8xvOkWOeQ4eEmhMPlkNU"
+TELEGRAM_TOKEN   = "8571189424:AAGgfMZ1ET9s-z3bRqJnoJ_gHuL0JFe4x8k"
 TELEGRAM_CHAT_ID = "567677761"
 
 API_BASE        = "https://api.dhan.co/v2"
@@ -60,6 +64,187 @@ def send_telegram_alert(index_name, ltp, atm, expiry, pcr, df):
         )
     except Exception as e:
         pass  # Silent fail — never break the dashboard
+
+def send_telegram_alertMSG(index_name, ltp, atm, expiry, pcr, df):
+    try:
+        # ── CALL side ──
+        max_c_oi_chg_row = df.loc[df["_cd"].idxmax()]
+        max_c_vol_row    = df.loc[df["_cv"].idxmax()]
+
+        # ── PUT side ──
+        max_p_oi_chg_row = df.loc[df["_pd"].idxmax()]
+        max_p_vol_row    = df.loc[df["_pv"].idxmax()]
+
+        c_arrow = "▲" if max_c_oi_chg_row["_cd"] >= 0 else "▼"
+        p_arrow = "▲" if max_p_oi_chg_row["_pd"] >= 0 else "▼"
+
+        msg = (
+            f"📊 *{index_name} Option Chain Alert*\n"
+            f"🕐 {time.strftime('%d-%b %H:%M')} | Expiry: {expiry}\n"
+            f"━━━━━━━━━━━━━━━━━━\n"
+            f"💰 LTP: `{ltp:,.0f}` | ATM: `{int(atm)}` | PCR: `{pcr:.2f}`\n"
+            f"━━━━━━━━━━━━━━━━━━\n"
+            f"📈 *CALL (CE)*\n"
+            f"  🔹 Highest OI Chg : `{int(max_c_oi_chg_row['STRIKE'])}` — ΔOI: `{max_c_oi_chg_row['_cd']/1e5:.2f}L {c_arrow}` | LTP: `{max_c_oi_chg_row['C LTP']}`\n"
+            f"  🔹 Highest Vol    : `{int(max_c_vol_row['STRIKE'])}` — Vol: `{max_c_vol_row['_cv']/1e5:.2f}L` | LTP: `{max_c_vol_row['C LTP']}`\n"
+            f"━━━━━━━━━━━━━━━━━━\n"
+            f"📉 *PUT (PE)*\n"
+            f"  🔸 Highest OI Chg : `{int(max_p_oi_chg_row['STRIKE'])}` — ΔOI: `{max_p_oi_chg_row['_pd']/1e5:.2f}L {p_arrow}` | LTP: `{max_p_oi_chg_row['P LTP']}`\n"
+            f"  🔸 Highest Vol    : `{int(max_p_vol_row['STRIKE'])}` — Vol: `{max_p_vol_row['_pv']/1e5:.2f}L` | LTP: `{max_p_vol_row['P LTP']}`\n"
+            f"━━━━━━━━━━━━━━━━━━\n"
+            f"_Auto-alert on every page refresh_"
+        )
+
+        requests.post(
+            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+            json={"chat_id": TELEGRAM_CHAT_ID, "text": msg, "parse_mode": "Markdown"},
+            timeout=5
+        )
+    except Exception as e:
+        pass  # Silent fail — never break the dashboard
+
+
+# ──────────────────────────────────────────────
+# EXCEL ALERT — colored xlsx sent to Telegram
+# ──────────────────────────────────────────────
+def send_excel_to_telegram(index_name, ltp, atm, expiry, pcr, df,
+                            c_vol_top3, c_oi_top3, p_vol_top3, p_oi_top3,
+                            min_c_oi_idx, min_p_oi_idx):
+    try:
+        display_cols = ["C OI CH%","C VOL (L)","CALL OI (L)","C Δ OI","C LTP",
+                        "STRIKE","IV","P LTP","P Δ OI","PUT OI (L)","P VOL (L)","P OI CH%"]
+        export_df = df[display_cols].copy()
+
+        wb = Workbook()
+        ws = wb.active
+        ws.title = f"{index_name} OC"
+
+        # ── Color map ──
+        def fill(hex_col):
+            return PatternFill("solid", fgColor=hex_col.replace("#",""))
+
+        FILLS = {
+            "CYAN1":  fill("#00bcd4"), "CYAN2":  fill("#0097a7"), "CYAN3":  fill("#006978"),
+            "PINK1":  fill("#e91e63"), "PINK2":  fill("#c2185b"), "PINK3":  fill("#880e4f"),
+            "YELLOW": fill("#ffe082"), "WHITE":  fill("#ffffff"),
+            "STRIKE": fill("#1c2230"), "DARK":   fill("#0a0c12"),
+            "HEADER": fill("#141824"),
+        }
+        WHITE_FONT  = Font(color="FFFFFF", bold=True, name="Calibri", size=10)
+        BLACK_FONT  = Font(color="000000", bold=True, name="Calibri", size=10)
+        NORMAL_FONT = Font(color="FFFFFF", name="Calibri", size=10)
+        GREY_FONT   = Font(color="94A3B8", name="Calibri", size=10)
+        CENTER      = Alignment(horizontal="center", vertical="center")
+        thin        = Side(style="thin", color="2d3446")
+        BORDER      = Border(left=thin, right=thin, top=thin, bottom=thin)
+
+        col_idx = {col: i+1 for i, col in enumerate(display_cols)}
+
+        # ── Title row ──
+        ws.merge_cells(f"A1:{get_column_letter(len(display_cols))}1")
+        title_cell = ws["A1"]
+        title_cell.value = (f"{index_name}  |  LTP: {ltp:,.0f}  |  ATM: {int(atm)}  "
+                            f"|  PCR: {pcr:.2f}  |  Expiry: {expiry}  "
+                            f"|  {time.strftime('%d-%b-%Y %H:%M')}")
+        title_cell.fill    = FILLS["HEADER"]
+        title_cell.font    = Font(color="FFFFFF", bold=True, name="Calibri", size=11)
+        title_cell.alignment = CENTER
+        ws.row_dimensions[1].height = 22
+
+        # ── Header row ──
+        for ci, col in enumerate(display_cols, 1):
+            cell = ws.cell(row=2, column=ci, value=col)
+            cell.fill      = FILLS["HEADER"]
+            cell.font      = Font(color="94A3B8", bold=True, name="Calibri", size=10)
+            cell.alignment = CENTER
+            cell.border    = BORDER
+        ws.row_dimensions[2].height = 18
+
+        # ── Data rows ──
+        for ri, (_, row) in enumerate(export_df.iterrows(), 3):
+            ws.row_dimensions[ri].height = 18
+            strike_val = df.loc[ri-3, "STRIKE"]
+            is_atm     = (strike_val == atm)
+            df_idx     = ri - 3
+
+            for ci, col in enumerate(display_cols, 1):
+                cell = ws.cell(row=ri, column=ci, value=row[col])
+                cell.alignment = CENTER
+                cell.border    = BORDER
+
+                # Default dark bg
+                cell.fill = FILLS["WHITE"] if is_atm else FILLS["DARK"]
+                cell.font = BLACK_FONT     if is_atm else NORMAL_FONT
+
+                # STRIKE column
+                if col == "STRIKE":
+                    cell.fill = FILLS["WHITE"] if is_atm else FILLS["STRIKE"]
+                    cell.font = BLACK_FONT if is_atm else WHITE_FONT
+                # IV column
+                elif col == "IV":
+                    cell.fill = FILLS["STRIKE"]
+                    cell.font = GREY_FONT
+
+                # CE Vol highlights
+                elif col == "C VOL (L)":
+                    if df_idx == c_vol_top3[0]:
+                        cell.fill, cell.font = FILLS["CYAN1"], BLACK_FONT
+                    elif len(c_vol_top3) > 1 and df_idx == c_vol_top3[1]:
+                        cell.fill, cell.font = FILLS["CYAN2"], WHITE_FONT
+                    elif len(c_vol_top3) > 2 and df_idx == c_vol_top3[2]:
+                        cell.fill, cell.font = FILLS["CYAN3"], WHITE_FONT
+
+                # CE OI Change highlights
+                elif col == "C Δ OI":
+                    if df_idx == min_c_oi_idx and df.loc[df_idx, "_cd"] < 0:
+                        cell.fill, cell.font = FILLS["YELLOW"], BLACK_FONT
+                    elif df_idx == c_oi_top3[0]:
+                        cell.fill, cell.font = FILLS["CYAN1"], BLACK_FONT
+                    elif len(c_oi_top3) > 1 and df_idx == c_oi_top3[1]:
+                        cell.fill, cell.font = FILLS["CYAN2"], WHITE_FONT
+                    elif len(c_oi_top3) > 2 and df_idx == c_oi_top3[2]:
+                        cell.fill, cell.font = FILLS["CYAN3"], WHITE_FONT
+
+                # PE OI Change highlights
+                elif col == "P Δ OI":
+                    if df_idx == min_p_oi_idx and df.loc[df_idx, "_pd"] < 0:
+                        cell.fill, cell.font = FILLS["YELLOW"], BLACK_FONT
+                    elif df_idx == p_oi_top3[0]:
+                        cell.fill, cell.font = FILLS["PINK1"], BLACK_FONT
+                    elif len(p_oi_top3) > 1 and df_idx == p_oi_top3[1]:
+                        cell.fill, cell.font = FILLS["PINK2"], WHITE_FONT
+                    elif len(p_oi_top3) > 2 and df_idx == p_oi_top3[2]:
+                        cell.fill, cell.font = FILLS["PINK3"], WHITE_FONT
+
+                # PE Vol highlights
+                elif col == "P VOL (L)":
+                    if df_idx == p_vol_top3[0]:
+                        cell.fill, cell.font = FILLS["PINK1"], BLACK_FONT
+                    elif len(p_vol_top3) > 1 and df_idx == p_vol_top3[1]:
+                        cell.fill, cell.font = FILLS["PINK2"], WHITE_FONT
+                    elif len(p_vol_top3) > 2 and df_idx == p_vol_top3[2]:
+                        cell.fill, cell.font = FILLS["PINK3"], WHITE_FONT
+
+        # ── Column widths ──
+        col_widths = [9,10,12,14,8,9,6,8,14,12,10,9]
+        for i, w in enumerate(col_widths, 1):
+            ws.column_dimensions[get_column_letter(i)].width = w
+
+        # ── Save to bytes and send ──
+        buf = io.BytesIO()
+        wb.save(buf)
+        buf.seek(0)
+
+        fname = f"{index_name}_OC_{time.strftime('%Y%m%d_%H%M')}.xlsx"
+        requests.post(
+            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendDocument",
+            data={"chat_id": TELEGRAM_CHAT_ID,
+                  "caption": f"📊 {index_name} Option Chain | {time.strftime('%d-%b %H:%M')}"},
+            files={"document": (fname, buf.read(), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+            timeout=15
+        )
+    except Exception as e:
+        pass  # Silent — never break dashboard
 
 # ──────────────────────────────────────────────
 # CSS - CLEAN DARK TERMINAL
@@ -128,7 +313,7 @@ if "index_choice" not in st.session_state:
     st.session_state.index_choice = "NIFTY"
 
 # 3 Minute Refresh (180 Seconds)
-refresh_interval = 600
+refresh_interval = 420
 if "last_refresh" not in st.session_state: 
     st.session_state.last_refresh = time.time()
 
@@ -201,12 +386,27 @@ if found_expiry:
         total_p_oi = df["_poi"].sum()
         pcr = total_p_oi / total_c_oi if total_c_oi else 0
 
+        # ── Highlight indices (computed once, used by both Excel and table) ──
+        c_vol_top3   = df['_cv'].nlargest(3).index.tolist()
+        c_oi_top3    = df['_cd'].nlargest(3).index.tolist()
+        p_vol_top3   = df['_pv'].nlargest(3).index.tolist()
+        p_oi_top3    = df['_pd'].nlargest(3).index.tolist()
+        min_c_oi_idx = df['_cd'].idxmin()
+        min_p_oi_idx = df['_pd'].idxmin()
+
         # ──────────────────────────────────────────────
         # TELEGRAM ALERT — fires on every page load/refresh
         # ──────────────────────────────────────────────
         send_telegram_alert(
             st.session_state.index_choice, ltp, atm,
             found_expiry, pcr, df
+        )
+
+        # ── Excel to Telegram ──
+        send_excel_to_telegram(
+            st.session_state.index_choice, ltp, atm, found_expiry, pcr, df,
+            c_vol_top3, c_oi_top3, p_vol_top3, p_oi_top3,
+            min_c_oi_idx, min_p_oi_idx
         )
 
         # ──────────────────────────────────────────────
@@ -235,25 +435,59 @@ if found_expiry:
         st.markdown("<div class='section-headers'><div class='sh'>CALLS</div><div class='sh'>STRIKE</div><div class='sh'>PUTS</div></div>", unsafe_allow_html=True)
 
         # ──────────────────────────────────────────────
-        # ORIGINAL TABLE HIGHLIGHT LOGIC
+        # CSV DOWNLOAD
         # ──────────────────────────────────────────────
-        max_c_vol_idx = df['_cv'].idxmax()
-        max_p_vol_idx = df['_pv'].idxmax()
-        max_c_oi_idx  = df['_cd'].idxmax()
-        max_p_oi_idx  = df['_pd'].idxmax()
+        csv_data = df[["C OI CH%","C VOL (L)","CALL OI (L)","C Δ OI","C LTP","STRIKE","IV","P LTP","P Δ OI","PUT OI (L)","P VOL (L)","P OI CH%"]].to_csv(index=False)
+        st.download_button(
+            label="⬇️ Download CSV",
+            data=csv_data,
+            file_name=f"{st.session_state.index_choice}_OC_{time.strftime('%Y%m%d_%H%M')}.csv",
+            mime="text/csv"
+        )
+
+        # ──────────────────────────────────────────────
+        # HIGHLIGHT LOGIC
+        # ──────────────────────────────────────────────
+        # Cyan shades: #1 bright, #2 medium, #3 dim
+        CYAN1, CYAN2, CYAN3 = '#00bcd4', '#0097a7', '#006978'
+        PINK1, PINK2, PINK3 = '#e91e63', '#c2185b', '#880e4f'
+        YELLOW = '#ffe082'   # light yellow for negative OI change
 
         def style_terminal(data):
             styles = pd.DataFrame('', index=data.index, columns=data.columns)
             styles.update(pd.DataFrame('background-color: #0a0c12; color: #ffffff;', index=data.index, columns=data.columns))
             styles['STRIKE'] = 'background-color: #141824; color: #ffffff; font-weight: 700;'
-            styles['IV'] = 'background-color: #141824; color: #94a3b8;'
+            styles['IV']     = 'background-color: #141824; color: #94a3b8;'
 
-            # ORIGINAL Highlights (Dark Cyan / Deep Rose)
-            styles.loc[max_c_vol_idx, 'C VOL (L)'] = 'background-color: #00bcd4; color: #000000; font-weight: 700;'
-            styles.loc[max_c_oi_idx, 'C Δ OI'] = 'background-color: #00bcd4; color: #000000; font-weight: 700;'
-            styles.loc[max_p_vol_idx, 'P VOL (L)'] = 'background-color: #e91e63; color: #000000; font-weight: 700;'
-            styles.loc[max_p_oi_idx, 'P Δ OI'] = 'background-color: #e91e63; color: #000000; font-weight: 700;'
+            # ── CE Vol — 1st/2nd/3rd ──
+            for rank, (idx, bg) in enumerate(zip(c_vol_top3, [CYAN1, CYAN2, CYAN3])):
+                fg = '#000000' if rank == 0 else '#ffffff'
+                styles.loc[idx, 'C VOL (L)'] = f'background-color: {bg}; color: {fg}; font-weight: 700;'
 
+            # ── CE OI Change — 1st/2nd/3rd positive ──
+            for rank, (idx, bg) in enumerate(zip(c_oi_top3, [CYAN1, CYAN2, CYAN3])):
+                fg = '#000000' if rank == 0 else '#ffffff'
+                styles.loc[idx, 'C Δ OI'] = f'background-color: {bg}; color: {fg}; font-weight: 700;'
+
+            # ── CE highest NEGATIVE OI change — light yellow ──
+            if df.loc[min_c_oi_idx, '_cd'] < 0:
+                styles.loc[min_c_oi_idx, 'C Δ OI'] = f'background-color: {YELLOW}; color: #000000; font-weight: 700;'
+
+            # ── PE Vol — 1st/2nd/3rd ──
+            for rank, (idx, bg) in enumerate(zip(p_vol_top3, [PINK1, PINK2, PINK3])):
+                fg = '#000000' if rank == 0 else '#ffffff'
+                styles.loc[idx, 'P VOL (L)'] = f'background-color: {bg}; color: {fg}; font-weight: 700;'
+
+            # ── PE OI Change — 1st/2nd/3rd positive ──
+            for rank, (idx, bg) in enumerate(zip(p_oi_top3, [PINK1, PINK2, PINK3])):
+                fg = '#000000' if rank == 0 else '#ffffff'
+                styles.loc[idx, 'P Δ OI'] = f'background-color: {bg}; color: {fg}; font-weight: 700;'
+
+            # ── PE highest NEGATIVE OI change — light yellow ──
+            if df.loc[min_p_oi_idx, '_pd'] < 0:
+                styles.loc[min_p_oi_idx, 'P Δ OI'] = f'background-color: {YELLOW}; color: #000000; font-weight: 700;'
+
+            # ── ATM Strike ──
             atm_idx = data[data['STRIKE'] == atm].index
             if not atm_idx.empty:
                 styles.loc[atm_idx[0], 'STRIKE'] = 'background-color: #ffffff; color: #000000; font-weight: 900;'
