@@ -109,7 +109,10 @@ def send_telegram_alertMSG(index_name, ltp, atm, expiry, pcr, df):
 # ──────────────────────────────────────────────
 def send_excel_to_telegram(index_name, ltp, atm, expiry, pcr, df,
                             c_vol_top3, c_oi_top3, p_vol_top3, p_oi_top3,
-                            min_c_oi_idx, min_p_oi_idx):
+                            min_c_oi_idx, min_p_oi_idx,
+                            c_neg_oi_top3=None, p_neg_oi_top3=None):
+    if c_neg_oi_top3 is None: c_neg_oi_top3 = []
+    if p_neg_oi_top3 is None: p_neg_oi_top3 = []
     try:
         display_cols = ["C OI CH%","C VOL (L)","CALL OI (L)","C Δ OI","C LTP",
                         "STRIKE","IV","P LTP","P Δ OI","PUT OI (L)","P VOL (L)","P OI CH%"]
@@ -124,18 +127,18 @@ def send_excel_to_telegram(index_name, ltp, atm, expiry, pcr, df,
             return PatternFill("solid", fgColor=hex_col.replace("#",""))
 
         FILLS = {
-            "CYAN1":  fill("#00bcd4"), "CYAN2":  fill("#0097a7"), "CYAN3":  fill("#006978"),
-            "PINK1":  fill("#e91e63"), "PINK2":  fill("#c2185b"), "PINK3":  fill("#880e4f"),
-            "YELLOW": fill("#ffe082"), "WHITE":  fill("#ffffff"),
-            "STRIKE": fill("#1c2230"), "DARK":   fill("#0a0c12"),
-            "HEADER": fill("#141824"),
+            "CYAN1":  fill("#1976d2"), "CYAN2":  fill("#64b5f6"), "CYAN3":  fill("#bbdefb"),
+            "PINK1":  fill("#c62828"), "PINK2":  fill("#ef5350"), "PINK3":  fill("#ffcdd2"),
+            "YELLOW": fill("#ffe082"), "YELLOW2": fill("#ffd54f"), "YELLOW3": fill("#fff9c4"), "WHITE":  fill("#ffffff"),
+            "STRIKE": fill("#c8dff5"), "DARK":   fill("#f0f6ff"),
+            "HEADER": fill("#daeaf8"),
         }
-        WHITE_FONT  = Font(color="FFFFFF", bold=True, name="Calibri", size=10)
-        BLACK_FONT  = Font(color="000000", bold=True, name="Calibri", size=10)
-        NORMAL_FONT = Font(color="FFFFFF", name="Calibri", size=10)
-        GREY_FONT   = Font(color="94A3B8", name="Calibri", size=10)
+        WHITE_FONT  = Font(color="0D1B2A", bold=True, name="Calibri", size=10)
+        BLACK_FONT  = Font(color="0D1B2A", bold=True, name="Calibri", size=10)
+        NORMAL_FONT = Font(color="0D1B2A", name="Calibri", size=10)
+        GREY_FONT   = Font(color="2C5F8A", name="Calibri", size=10)
         CENTER      = Alignment(horizontal="center", vertical="center")
-        thin        = Side(style="thin", color="2d3446")
+        thin        = Side(style="thin", color="B8D4F0")
         BORDER      = Border(left=thin, right=thin, top=thin, bottom=thin)
 
         col_idx = {col: i+1 for i, col in enumerate(display_cols)}
@@ -147,7 +150,7 @@ def send_excel_to_telegram(index_name, ltp, atm, expiry, pcr, df,
                             f"|  PCR: {pcr:.2f}  |  Expiry: {expiry}  "
                             f"|  {time.strftime('%d-%b-%Y %H:%M')}")
         title_cell.fill    = FILLS["HEADER"]
-        title_cell.font    = Font(color="FFFFFF", bold=True, name="Calibri", size=11)
+        title_cell.font    = Font(color="0D1B2A", bold=True, name="Calibri", size=11)
         title_cell.alignment = CENTER
         ws.row_dimensions[1].height = 22
 
@@ -155,7 +158,7 @@ def send_excel_to_telegram(index_name, ltp, atm, expiry, pcr, df,
         for ci, col in enumerate(display_cols, 1):
             cell = ws.cell(row=2, column=ci, value=col)
             cell.fill      = FILLS["HEADER"]
-            cell.font      = Font(color="94A3B8", bold=True, name="Calibri", size=10)
+            cell.font      = Font(color="1A3A5C", bold=True, name="Calibri", size=10)
             cell.alignment = CENTER
             cell.border    = BORDER
         ws.row_dimensions[2].height = 18
@@ -196,7 +199,11 @@ def send_excel_to_telegram(index_name, ltp, atm, expiry, pcr, df,
 
                 # CE OI Change highlights
                 elif col == "C Δ OI":
-                    if df_idx == min_c_oi_idx and df.loc[df_idx, "_cd"] < 0:
+                    if len(c_neg_oi_top3) > 2 and df_idx == c_neg_oi_top3[2]:
+                        cell.fill, cell.font = FILLS["YELLOW3"], BLACK_FONT
+                    if len(c_neg_oi_top3) > 1 and df_idx == c_neg_oi_top3[1]:
+                        cell.fill, cell.font = FILLS["YELLOW2"], BLACK_FONT
+                    if len(c_neg_oi_top3) > 0 and df_idx == c_neg_oi_top3[0]:
                         cell.fill, cell.font = FILLS["YELLOW"], BLACK_FONT
                     elif df_idx == c_oi_top3[0]:
                         cell.fill, cell.font = FILLS["CYAN1"], BLACK_FONT
@@ -207,7 +214,11 @@ def send_excel_to_telegram(index_name, ltp, atm, expiry, pcr, df,
 
                 # PE OI Change highlights
                 elif col == "P Δ OI":
-                    if df_idx == min_p_oi_idx and df.loc[df_idx, "_pd"] < 0:
+                    if len(p_neg_oi_top3) > 2 and df_idx == p_neg_oi_top3[2]:
+                        cell.fill, cell.font = FILLS["YELLOW3"], BLACK_FONT
+                    if len(p_neg_oi_top3) > 1 and df_idx == p_neg_oi_top3[1]:
+                        cell.fill, cell.font = FILLS["YELLOW2"], BLACK_FONT
+                    if len(p_neg_oi_top3) > 0 and df_idx == p_neg_oi_top3[0]:
                         cell.fill, cell.font = FILLS["YELLOW"], BLACK_FONT
                     elif df_idx == p_oi_top3[0]:
                         cell.fill, cell.font = FILLS["PINK1"], BLACK_FONT
@@ -255,14 +266,14 @@ st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;700;800&family=JetBrains+Mono:wght@500;700&display=swap');
 
-/* Force Deep Dark Background */
+/* Light Blue/Red Theme Background */
 [data-testid="stAppViewContainer"], [data-testid="stHeader"], .main {
-    background-color: #0a0c12 !important;
+    background-color: #f0f6ff !important;
 }
 
-/* Clean White Text Global */
+/* Dark Text for Light Background */
 html, body, [class*="css"] {
-    color: #ffffff !important;
+    color: #0d1b2a !important;
     font-family: 'Inter', sans-serif !important;
 }
 
@@ -270,30 +281,30 @@ html, body, [class*="css"] {
 .section-headers { display: grid; grid-template-columns: 1fr 110px 1fr; gap: 10px; margin-bottom: 5px; }
 .sh { 
     text-align: center; padding: 10px; font-weight: 700; border-radius: 4px; 
-    border: 1px solid #2d3446; background: #141824; font-size: 0.8rem;
+    border: 1px solid #b8d4f0; background: #daeaf8; font-size: 0.8rem; color: #0d1b2a;
 }
 
 /* Dataframe Container */
 [data-testid="stDataFrameResizable"] {
-    background-color: #0a0c12 !important;
-    border: 1px solid #2d3446 !important;
+    background-color: #f0f6ff !important;
+    border: 1px solid #b8d4f0 !important;
 }
 .stDataFrame th {
-    background-color: #1c2230 !important;
-    color: #94a3b8 !important;
+    background-color: #c8dff5 !important;
+    color: #1a3a5c !important;
     font-size: 0.7rem !important;
 }
 
 /* Style for Buttons */
 div.stButton > button {
     width: 100%;
-    background-color: #141824;
-    color: white;
-    border: 1px solid #2d3446;
+    background-color: #daeaf8;
+    color: #0d1b2a;
+    border: 1px solid #7ab3e0;
 }
 div.stButton > button:hover {
-    border-color: #00bcd4;
-    color: #00bcd4;
+    border-color: #1976d2;
+    color: #1976d2;
 }
 </style>
 """, unsafe_allow_html=True)
@@ -393,6 +404,9 @@ if found_expiry:
         p_oi_top3    = df['_pd'].nlargest(3).index.tolist()
         min_c_oi_idx = df['_cd'].idxmin()
         min_p_oi_idx = df['_pd'].idxmin()
+        # Top 3 most negative OI changes (CE and PE)
+        c_neg_oi_top3 = df[df['_cd'] < 0]['_cd'].nsmallest(3).index.tolist()
+        p_neg_oi_top3 = df[df['_pd'] < 0]['_pd'].nsmallest(3).index.tolist()
 
         # ──────────────────────────────────────────────
         # TELEGRAM ALERT — fires on every page load/refresh
@@ -406,26 +420,27 @@ if found_expiry:
         send_excel_to_telegram(
             st.session_state.index_choice, ltp, atm, found_expiry, pcr, df,
             c_vol_top3, c_oi_top3, p_vol_top3, p_oi_top3,
-            min_c_oi_idx, min_p_oi_idx
+            min_c_oi_idx, min_p_oi_idx,
+            c_neg_oi_top3, p_neg_oi_top3
         )
 
         # ──────────────────────────────────────────────
         # TOP PANEL (METRICS)
         # ──────────────────────────────────────────────
         st.markdown(f"""
-        <div style="background-color: #0a0c12; padding: 10px 0px; border-bottom: 1px solid #2d3446;">
-            <h1 style="color: white; font-size: 2.2rem; font-weight: 800; margin-bottom: 20px; letter-spacing: -1px;">
+        <div style="background-color: #daeaf8; padding: 10px 0px; border-bottom: 1px solid #7ab3e0;">
+            <h1 style="color: #0d1b2a; font-size: 2.2rem; font-weight: 800; margin-bottom: 20px; letter-spacing: -1px;">
                 NSE {st.session_state.index_choice} | ATM {int(atm)} | LTP {ltp:,.0f} | {time.strftime('%H:%M')}
             </h1>
             <div style="display: grid; grid-template-columns: repeat(6, 1fr); gap: 15px;">
-                <div><div style="color: #94a3b8; font-size: 0.75rem; font-weight: 600;">LTP</div><div style="font-size: 1.6rem; font-weight: 700;">{ltp:,.0f}</div></div>
-                <div><div style="color: #94a3b8; font-size: 0.75rem; font-weight: 600;">ATM</div><div style="font-size: 1.6rem; font-weight: 700;">{int(atm)}</div></div>
-                <div><div style="color: #94a3b8; font-size: 0.75rem; font-weight: 600;">PCR</div><div style="font-size: 1.6rem; font-weight: 700;">{pcr:.2f}</div></div>
-                <div><div style="color: #94a3b8; font-size: 0.75rem; font-weight: 600;">CE OI</div><div style="font-size: 1.6rem; font-weight: 700;">{fmt_lakh(total_c_oi)}L</div></div>
-                <div><div style="color: #94a3b8; font-size: 0.75rem; font-weight: 600;">PE OI</div><div style="font-size: 1.6rem; font-weight: 700;">{fmt_lakh(total_p_oi)}L</div></div>
-                <div><div style="color: #94a3b8; font-size: 0.75rem; font-weight: 600;">CE OI Chg</div><div style="font-size: 1.6rem; font-weight: 700;">{fmt_lakh(df['_cd'].sum())}L</div></div>
+                <div><div style="color: #2c5f8a; font-size: 0.75rem; font-weight: 600;">LTP</div><div style="font-size: 1.6rem; font-weight: 700; color: #0d1b2a;">{ltp:,.0f}</div></div>
+                <div><div style="color: #2c5f8a; font-size: 0.75rem; font-weight: 600;">ATM</div><div style="font-size: 1.6rem; font-weight: 700; color: #0d1b2a;">{int(atm)}</div></div>
+                <div><div style="color: #2c5f8a; font-size: 0.75rem; font-weight: 600;">PCR</div><div style="font-size: 1.6rem; font-weight: 700; color: #0d1b2a;">{pcr:.2f}</div></div>
+                <div><div style="color: #2c5f8a; font-size: 0.75rem; font-weight: 600;">CE OI</div><div style="font-size: 1.6rem; font-weight: 700; color: #0d1b2a;">{fmt_lakh(total_c_oi)}L</div></div>
+                <div><div style="color: #2c5f8a; font-size: 0.75rem; font-weight: 600;">PE OI</div><div style="font-size: 1.6rem; font-weight: 700; color: #0d1b2a;">{fmt_lakh(total_p_oi)}L</div></div>
+                <div><div style="color: #2c5f8a; font-size: 0.75rem; font-weight: 600;">CE OI Chg</div><div style="font-size: 1.6rem; font-weight: 700; color: #0d1b2a;">{fmt_lakh(df['_cd'].sum())}L</div></div>
             </div>
-            <div style="color: #64748b; font-size: 0.7rem; margin-top: 20px;">
+            <div style="color: #3a6ea5; font-size: 0.7rem; margin-top: 20px;">
                 Expiry: {found_expiry} | Update in: {int(refresh_interval - elapsed)}s
             </div>
         </div>
@@ -449,15 +464,15 @@ if found_expiry:
         # HIGHLIGHT LOGIC
         # ──────────────────────────────────────────────
         # Cyan shades: #1 bright, #2 medium, #3 dim
-        CYAN1, CYAN2, CYAN3 = '#00bcd4', '#0097a7', '#006978'
-        PINK1, PINK2, PINK3 = '#e91e63', '#c2185b', '#880e4f'
-        YELLOW = '#ffe082'   # light yellow for negative OI change
+        CYAN1, CYAN2, CYAN3 = '#1976d2', '#64b5f6', '#bbdefb'
+        PINK1, PINK2, PINK3 = '#c62828', '#ef5350', '#ffcdd2'
+        YELLOW1, YELLOW2, YELLOW3 = '#ffe082', '#ffd54f', '#fff9c4'  # yellow shades for negative OI
 
         def style_terminal(data):
             styles = pd.DataFrame('', index=data.index, columns=data.columns)
-            styles.update(pd.DataFrame('background-color: #0a0c12; color: #ffffff;', index=data.index, columns=data.columns))
-            styles['STRIKE'] = 'background-color: #141824; color: #ffffff; font-weight: 700;'
-            styles['IV']     = 'background-color: #141824; color: #94a3b8;'
+            styles.update(pd.DataFrame('background-color: #f0f6ff; color: #0d1b2a;', index=data.index, columns=data.columns))
+            styles['STRIKE'] = 'background-color: #c8dff5; color: #0d1b2a; font-weight: 700;'
+            styles['IV']     = 'background-color: #daeaf8; color: #3a6ea5;'
 
             # ── CE Vol — 1st/2nd/3rd ──
             for rank, (idx, bg) in enumerate(zip(c_vol_top3, [CYAN1, CYAN2, CYAN3])):
@@ -469,9 +484,9 @@ if found_expiry:
                 fg = '#000000' if rank == 0 else '#ffffff'
                 styles.loc[idx, 'C Δ OI'] = f'background-color: {bg}; color: {fg}; font-weight: 700;'
 
-            # ── CE highest NEGATIVE OI change — light yellow ──
-            if df.loc[min_c_oi_idx, '_cd'] < 0:
-                styles.loc[min_c_oi_idx, 'C Δ OI'] = f'background-color: {YELLOW}; color: #000000; font-weight: 700;'
+            # ── CE top 3 NEGATIVE OI change — yellow shades ──
+            for rank, (idx, bg) in enumerate(zip(c_neg_oi_top3, [YELLOW1, YELLOW2, YELLOW3])):
+                styles.loc[idx, 'C Δ OI'] = f'background-color: {bg}; color: #000000; font-weight: 700;'
 
             # ── PE Vol — 1st/2nd/3rd ──
             for rank, (idx, bg) in enumerate(zip(p_vol_top3, [PINK1, PINK2, PINK3])):
@@ -483,9 +498,9 @@ if found_expiry:
                 fg = '#000000' if rank == 0 else '#ffffff'
                 styles.loc[idx, 'P Δ OI'] = f'background-color: {bg}; color: {fg}; font-weight: 700;'
 
-            # ── PE highest NEGATIVE OI change — light yellow ──
-            if df.loc[min_p_oi_idx, '_pd'] < 0:
-                styles.loc[min_p_oi_idx, 'P Δ OI'] = f'background-color: {YELLOW}; color: #000000; font-weight: 700;'
+            # ── PE top 3 NEGATIVE OI change — yellow shades ──
+            for rank, (idx, bg) in enumerate(zip(p_neg_oi_top3, [YELLOW1, YELLOW2, YELLOW3])):
+                styles.loc[idx, 'P Δ OI'] = f'background-color: {bg}; color: #000000; font-weight: 700;'
 
             # ── ATM Strike ──
             atm_idx = data[data['STRIKE'] == atm].index
