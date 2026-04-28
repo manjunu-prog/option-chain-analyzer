@@ -6,6 +6,8 @@ import io
 from openpyxl import Workbook
 from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
+from PIL import Image, ImageDraw, ImageFont
+import io
 
 # ──────────────────────────────────────────────
 # CONFIG
@@ -23,6 +25,84 @@ UNDERLYING_MAP = {
     "NIFTY":  {"Scrip": 13, "Segments": ["IDX_I", "NSE_FNO"], "step": 50},
     "SENSEX": {"Scrip": 1,  "Segments": ["BSE_FNO", "IDX_I"], "step": 100},
 }
+
+def send_telegram_strikewise_image(index_name, ltp, atm, pcr, df, step):
+    try:
+        # Filter ATM ±5
+        df = df[(df["STRIKE"] >= atm - step*5) & (df["STRIKE"] <= atm + step*5)]
+        df = df.sort_values("STRIKE", ascending=False)
+
+        width, height = 800, 50 + len(df)*40 + 40
+        img = Image.new("RGB", (width, height), (15, 18, 25))
+        draw = ImageDraw.Draw(img)
+
+        font = ImageFont.load_default()
+
+        # Title
+        draw.text((20, 10), f"{index_name} | LTP: {ltp:,.0f}", fill=(255,255,255), font=font)
+
+        max_vol = max(df["_cv"].max(), df["_pv"].max(), 1)
+
+        y = 50
+        bar_max_width = 200
+
+        for _, r in df.iterrows():
+            strike = int(r["STRIKE"])
+            c_vol = r["_cv"]
+            p_vol = r["_pv"]
+            c_delta = r["_cd"]
+            p_delta = r["_pd"]
+
+            # sentiment color
+            if c_delta > p_delta:
+                color = (255, 80, 80)   # red
+            elif p_delta > c_delta:
+                color = (80, 255, 120)  # green
+            else:
+                color = (200, 200, 200)
+
+            # CE bar (left)
+            c_width = int((c_vol / max_vol) * bar_max_width)
+            draw.rectangle([20, y, 20 + c_width, y + 15], fill=(180,180,180))
+
+            # PE bar (right)
+            p_width = int((p_vol / max_vol) * bar_max_width)
+            draw.rectangle([width - 20 - p_width, y, width - 20, y + 15], fill=(180,180,180))
+
+            # strike text
+            if strike == atm:
+                txt = f"{strike} ATM"
+            else:
+                txt = f"{strike}"
+
+            # center text
+            draw.text((width//2 - 40, y), txt, fill=color, font=font)
+
+            # values
+            draw.text((20 + c_width + 5, y), f"{c_vol/1e5:.1f}L", fill=(255,255,255), font=font)
+            draw.text((width - 20 - p_width - 60, y), f"{p_vol/1e5:.1f}L", fill=(255,255,255), font=font)
+
+            y += 35
+
+        # PCR
+        draw.text((20, height - 30), f"PCR: {pcr:.2f}", fill=(255,255,255), font=font)
+
+        # Save to bytes
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        buf.seek(0)
+
+        # Send to Telegram
+        requests.post(
+            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendPhoto",
+            data={"chat_id": TELEGRAM_CHAT_ID},
+            files={"photo": ("oc.png", buf, "image/png")},
+            timeout=10
+        )
+
+    except Exception as e:
+        pass
+
 
 # ──────────────────────────────────────────────
 # TELEGRAM ALERT
@@ -257,6 +337,84 @@ def send_excel_to_telegram(index_name, ltp, atm, expiry, pcr, df,
     except Exception as e:
         pass  # Silent — never break dashboard
 
+
+def send_telegram_strikewise(index_name, ltp, atm, pcr, df, step):
+    try:
+        msg_lines = []
+        msg_lines.append(f"📊 *{index_name}* | LTP: `{ltp:,.0f}`\n")
+
+        # Only ATM ±5
+        df = df[(df["STRIKE"] >= atm - step*5) & (df["STRIKE"] <= atm + step*5)]
+        df_sorted = df.sort_values("STRIKE", ascending=False)
+
+        def short_lakh(val):
+            v = val / 1e5
+            if v >= 1000:
+                return f"{v/1000:.1f}k"
+            elif v >= 100:
+                return f"{int(v)}"
+            else:
+                return f"{v:.1f}"
+
+        for _, r in df_sorted.iterrows():
+            strike = int(r["STRIKE"])
+            c_delta = r["_cd"]
+            p_delta = r["_pd"]
+
+            # 🔴🟢 based on ΔOI
+            if c_delta > p_delta:
+                icon = "🔴"
+            elif p_delta > c_delta:
+                icon = "🟢"
+            else:
+                icon = "⚪"
+
+            # Strike label
+            if strike == atm:
+                strike_txt = f"{icon} {strike} ATM"
+            else:
+                strike_txt = f"{icon} {strike}"
+
+            # CE side
+            c_vol = short_lakh(r["_cv"])
+            c_oi  = short_lakh(abs(c_delta))
+            c_ltp = f"{float(r['C LTP']):.0f}"
+
+            # PE side
+            p_vol = short_lakh(r["_pv"])
+            p_oi  = short_lakh(abs(p_delta))
+            p_ltp = f"{float(r['P LTP']):.0f}"
+
+            # ▲▼ for direction
+            c_arrow = "▲" if c_delta >= 0 else "▼"
+            p_arrow = "▲" if p_delta >= 0 else "▼"
+
+            # 👉 FINAL CLEAN LINE
+            line = (
+                f"`{c_vol}/{c_oi}{c_arrow}/{c_ltp:<3}`  "
+                f"{strike_txt:^14}  "
+                f"`{p_ltp:>3}/{p_oi}{p_arrow}/{p_vol}`"
+            )
+
+            msg_lines.append(line)
+
+        msg_lines.append(f"\nPCR: `{pcr:.2f}`")
+
+        final_msg = "\n".join(msg_lines)
+
+        requests.post(
+            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+            json={
+                "chat_id": TELEGRAM_CHAT_ID,
+                "text": final_msg,
+                "parse_mode": "Markdown"
+            },
+            timeout=5
+        )
+
+    except Exception:
+        pass
+
 # ──────────────────────────────────────────────
 # CSS - CLEAN DARK TERMINAL
 # ──────────────────────────────────────────────
@@ -422,6 +580,24 @@ if found_expiry:
             c_vol_top3, c_oi_top3, p_vol_top3, p_oi_top3,
             min_c_oi_idx, min_p_oi_idx,
             c_neg_oi_top3, p_neg_oi_top3
+        )
+
+        send_telegram_strikewise(
+        st.session_state.index_choice,
+        ltp,
+        atm,
+        pcr,
+        df,
+        cfg["step"]
+        )
+
+        send_telegram_strikewise_image(
+        st.session_state.index_choice,
+        ltp,
+        atm,
+        pcr,
+        df,
+        cfg["step"]
         )
 
         # ──────────────────────────────────────────────
