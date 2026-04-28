@@ -24,6 +24,125 @@ UNDERLYING_MAP = {
     "SENSEX": {"Scrip": 1,  "Segments": ["BSE_FNO", "IDX_I"], "step": 100},
 }
 
+# ... (ALL YOUR IMPORTS & CONFIG — NO CHANGE)
+
+# ──────────────────────────────────────────────
+# FETCH & ALERT
+# ──────────────────────────────────────────────
+def fetch_and_alert(index_name, cfg):
+    # Step 1: Get nearest expiry
+    found_expiry, used_seg = None, None
+    for seg in cfg["Segments"]:
+        r = requests.post(EXPIRY_LIST_URL,
+                          json={"UnderlyingScrip": cfg["Scrip"], "UnderlyingSeg": seg},
+                          headers=_headers(), timeout=10)
+        exp_list = r.json().get("data", [])
+        if exp_list:
+            found_expiry, used_seg = exp_list[0], seg
+            break
+
+    if not found_expiry:
+        print(f"[{index_name}] No expiry found.")
+        return
+
+    # Step 2: Fetch option chain
+    r_oc = requests.post(OPTIONCHAIN_URL,
+                         json={"UnderlyingScrip": cfg["Scrip"], "UnderlyingSeg": used_seg, "Expiry": found_expiry},
+                         headers=_headers(), timeout=10)
+    data_sec = r_oc.json().get("data", {})
+    oc_map   = data_sec.get("oc", {})
+    ltp      = float(data_sec.get("last_price") or 0)
+
+    if not oc_map or ltp == 0:
+        print(f"[{index_name}] No OC data.")
+        return
+
+    # Step 3: Build ATM ± 5 rows
+    atm  = round(ltp / cfg["step"]) * cfg["step"]
+    rows = []
+    for strike_s, legs in oc_map.items():
+        strike_f = float(strike_s)
+        if abs(strike_f - atm) <= (cfg["step"] * ATM_RANGE):
+            ce = legs.get("ce", {})
+            pe = legs.get("pe", {})
+            c_delta = int(ce.get("oi", 0)) - int(ce.get("previous_oi") or 0)
+            p_delta = int(pe.get("oi", 0)) - int(pe.get("previous_oi") or 0)
+            rows.append({
+                "strike":  strike_f,
+                "c_ltp":   float(ce.get("last_price", 0)),
+                "p_ltp":   float(pe.get("last_price", 0)),
+                "c_oi":    int(ce.get("oi", 0)),
+                "p_oi":    int(pe.get("oi", 0)),
+                "c_delta": c_delta,
+                "p_delta": p_delta,
+                "c_vol":   int(ce.get("volume", 0)),
+                "p_vol":   int(pe.get("volume", 0)),
+            })
+
+    if not rows:
+        return
+
+    rows = sorted(rows, key=lambda x: x["strike"], reverse=True)
+
+    # Step 4: Identify max values for highlighting (no change)
+    max_c_delta = max(r["c_delta"] for r in rows)
+    max_p_delta = max(r["p_delta"] for r in rows)
+    max_c_vol   = max(r["c_vol"]   for r in rows)
+    max_p_vol   = max(r["p_vol"]   for r in rows)
+
+    total_c_oi = sum(r["c_oi"] for r in rows)
+    total_p_oi = sum(r["p_oi"] for r in rows)
+    pcr        = total_p_oi / total_c_oi if total_c_oi else 0
+
+    # Step 5: Generate image (NO CHANGE)
+    img_bytes = build_table_image(
+        index_name, ltp, atm, found_expiry, pcr, rows,
+        max_c_delta, max_p_delta, max_c_vol, max_p_vol
+    )
+
+    # ──────────────────────────────────────────────
+    # ✅ NEW: SMART TELEGRAM TEXT (OI SENTIMENT)
+    # ──────────────────────────────────────────────
+    msg_lines = []
+    msg_lines.append(f"📊 *{index_name}*  |  LTP: `{ltp:,.0f}`\n")
+
+    for r in rows:
+        strike = int(r["strike"])
+        c_delta = r["c_delta"]
+        p_delta = r["p_delta"]
+
+        # Sentiment logic
+        if c_delta > p_delta:
+            icon = "🔴"   # Bearish
+        elif p_delta > c_delta:
+            icon = "🟢"   # Bullish
+        else:
+            icon = "⚪"
+
+        # Strike formatting
+        if strike == atm:
+            strike_txt = f"{icon} {strike} ATM"
+        else:
+            diff = int((strike - atm) / cfg["step"])
+            sign = f"+{diff}" if diff > 0 else f"{diff}"
+            strike_txt = f"{icon} {strike} {sign}"
+
+        left  = f"{r['c_vol']:,}"
+        right = f"{r['p_vol']:,}"
+
+        line = f"`{left:<10}`  {strike_txt:^14}  `{right:>10}`"
+        msg_lines.append(line)
+
+    msg_lines.append(f"\nPCR: `{pcr:.2f}`")
+
+    final_msg = "\n".join(msg_lines)
+
+    # ✅ Send BOTH image + new text
+    send_telegram_image(img_bytes, caption="")   # keep image clean
+    send_telegram_text(final_msg)
+
+    print(f"[{index_name}] Image + Smart text alert sent ✅")
+
 # ──────────────────────────────────────────────
 # TELEGRAM ALERT
 # ──────────────────────────────────────────────
