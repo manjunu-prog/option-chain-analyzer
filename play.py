@@ -26,6 +26,85 @@ UNDERLYING_MAP = {
     "SENSEX": {"Scrip": 1,  "Segments": ["BSE_FNO", "IDX_I"], "step": 100},
 }
 
+def send_telegram_combined_analysis(index_name, ltp, atm, pcr, df, step):
+    try:
+        # Filter ATM ±5 and sort
+        df = df[(df["STRIKE"] >= atm - step*5) & (df["STRIKE"] <= atm + step*5)]
+        df = df.sort_values("STRIKE", ascending=False)
+
+        # Increase height to accommodate dual bars (Volume + OI Change)
+        width, height = 850, 80 + len(df)*60 + 40
+        img = Image.new("RGB", (width, height), (10, 12, 18)) # Darker background
+        draw = ImageDraw.Draw(img)
+        font = ImageFont.load_default()
+
+        # Header
+        draw.text((20, 15), f"🚀 {index_name} DUAL ANALYSIS | LTP: {ltp:,.0f} | PCR: {pcr:.2f}", fill=(255,255,255), font=font)
+        draw.text((20, 35), "LEFT: CALL (Vol/ΔOI) | RIGHT: PUT (Vol/ΔOI)", fill=(150, 150, 150), font=font)
+
+        # Normalize scaling
+        max_vol = max(df["_cv"].max(), df["_pv"].max(), 1)
+        max_oi  = max(df["_cd"].abs().max(), df["_pd"].abs().max(), 1) # Use absolute for ΔOI scaling
+
+        y = 75
+        bar_max_w = 220
+
+        for _, r in df.iterrows():
+            strike = int(r["STRIKE"])
+            # Data points
+            cv, pv = r["_cv"], r["_pv"]
+            cd, pd = r["_cd"], r["_pd"]
+
+            # --- 1. VOLUME BARS (Top thin bar) ---
+            cv_w = int((cv / max_vol) * bar_max_w)
+            pv_w = int((pv / max_vol) * bar_max_w)
+            # CE Vol (Grey)
+            draw.rectangle([20, y, 20 + cv_w, y + 8], fill=(100, 116, 139))
+            # PE Vol (Grey)
+            draw.rectangle([width - 20 - pv_w, y, width - 20, y + 8], fill=(100, 116, 139))
+
+            # --- 2. OI CHANGE BARS (Bottom thick bar) ---
+            cd_w = int((abs(cd) / max_oi) * bar_max_w)
+            pd_w = int((abs(pd) / max_oi) * bar_max_w)
+            
+            # CE ΔOI Bar Color: Red if positive (selling), Green if negative (covering)
+            ce_color = (239, 68, 68) if cd > 0 else (34, 197, 94)
+            draw.rectangle([20, y + 12, 20 + cd_w, y + 25], fill=ce_color)
+            
+            # PE ΔOI Bar Color: Green if positive (selling/support), Red if negative
+            pe_color = (34, 197, 94) if pd > 0 else (239, 68, 68)
+            draw.rectangle([width - 20 - pd_w, y + 12, width - 20, y + 25], fill=pe_color)
+
+            # --- 3. STRIKE TEXT (Center) ---
+            strike_color = (255, 255, 255)
+            txt = f"{strike} ATM" if strike == atm else str(strike)
+            if strike == atm:
+                draw.rectangle([width//2 - 50, y, width//2 + 50, y + 25], outline=(255,255,255))
+            
+            draw.text((width//2 - 30, y + 5), txt, fill=strike_color, font=font)
+
+            # --- 4. VALUES ---
+            # Volume labels
+            draw.text((20 + cv_w + 5, y), f"V:{cv/1e5:.1f}L", fill=(148, 163, 184), font=font)
+            draw.text((width - 20 - pv_w - 70, y), f"V:{pv/1e5:.1f}L", fill=(148, 163, 184), font=font)
+            # OI Delta labels
+            draw.text((20 + cd_w + 5, y + 12), f"Δ:{cd/1e5:.1f}L", fill=ce_color, font=font)
+            draw.text((width - 20 - pd_w - 70, y + 12), f"Δ:{pd/1e5:.1f}L", fill=pe_color, font=font)
+
+            y += 55 # Space for next strike
+
+        # Save and Send
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        buf.seek(0)
+        requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendPhoto",
+                      data={"chat_id": TELEGRAM_CHAT_ID},
+                      files={"photo": ("analysis.png", buf, "image/png")}, timeout=15)
+    except Exception as e:
+        print(f"Error generating dual chart: {e}")
+
+
+
 def send_telegram_strikewise_image(index_name, ltp, atm, pcr, df, step):
     try:
         # Filter ATM ±5
@@ -599,6 +678,25 @@ if found_expiry:
         df,
         cfg["step"]
         )
+        # Rename columns to match the new function's requirements
+        df_for_telegram = df.rename(columns={
+        "STRIKE": "STRIKE", 
+        "CE Volume": "_cv", 
+        "PE Volume": "_pv", 
+        "CE Δ OI": "_cd", 
+        "PE Δ OI": "_pd"
+        })
+
+        # Call the new dual-analysis function
+        send_telegram_combined_analysis(
+        index_name=st.session_state.index_choice,
+        ltp=ltp,
+        atm=atm,
+        pcr=pcr,
+        df=df_for_telegram,
+        step=cfg["step"]
+        )
+        
 
         # ──────────────────────────────────────────────
         # TOP PANEL (METRICS)
