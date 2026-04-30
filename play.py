@@ -422,63 +422,52 @@ def send_telegram_strikewise(index_name, ltp, atm, pcr, df, step):
         msg_lines = []
         msg_lines.append(f"📊 *{index_name}* | LTP: `{ltp:,.0f}`\n")
 
-        # Only ATM ±5
+        # Filter for ATM ±5 strikes and sort
         df = df[(df["STRIKE"] >= atm - step*5) & (df["STRIKE"] <= atm + step*5)]
         df_sorted = df.sort_values("STRIKE", ascending=False)
 
         def short_lakh(val):
-            v = val / 1e5
-            if v >= 1000:
-                return f"{v/1000:.1f}k"
-            elif v >= 100:
-                return f"{int(v)}"
-            else:
-                return f"{v:.1f}"
+            return f"{val / 1e5:.1f}L"
 
         for _, r in df_sorted.iterrows():
             strike = int(r["STRIKE"])
-            c_delta = r["_cd"]
-            p_delta = r["_pd"]
+            c_vol_raw = r["_cv"]
+            p_vol_raw = r["_pv"]
 
-            # 🔴🟢 based on ΔOI
-            if c_delta > p_delta:
-                icon = "🔴"
-            elif p_delta > c_delta:
+            # Icon logic based on Volume instead of Delta OI
+            # 🟢 Green: Call Volume > Put Volume
+            # 🔴 Red: Put Volume > Call Volume
+            if c_vol_raw > p_vol_raw:
                 icon = "🟢"
+            elif p_vol_raw > c_vol_raw:
+                icon = "🔴"
             else:
                 icon = "⚪"
 
-            # Strike label
+            # Strike label formatting
             if strike == atm:
                 strike_txt = f"{icon} {strike} ATM"
             else:
                 strike_txt = f"{icon} {strike}"
 
-            # CE side
-            c_vol = short_lakh(r["_cv"])
-            c_oi  = short_lakh(abs(c_delta))
+            # Formatting values (Volume and LTP only)
+            c_vol = short_lakh(c_vol_raw)
+            p_vol = short_lakh(p_vol_raw)
+            
+            # Ensure LTP columns match your DataFrame keys (usually 'C LTP' and 'P LTP')
             c_ltp = f"{float(r['C LTP']):.0f}"
-
-            # PE side
-            p_vol = short_lakh(r["_pv"])
-            p_oi  = short_lakh(abs(p_delta))
             p_ltp = f"{float(r['P LTP']):.0f}"
 
-            # ▲▼ for direction
-            c_arrow = "▲" if c_delta >= 0 else "▼"
-            p_arrow = "▲" if p_delta >= 0 else "▼"
-
-            # 👉 FINAL CLEAN LINE
+            # 👉 FINAL CLEAN LINE: [Call Vol/LTP] [Strike] [LTP/Put Vol]
             line = (
-                f"`{c_vol}/{c_oi}{c_arrow}/{c_ltp:<3}`  "
+                f"`{c_vol}/{c_ltp:<3}`  "
                 f"{strike_txt:^14}  "
-                f"`{p_ltp:>3}/{p_oi}{p_arrow}/{p_vol}`"
+                f"`{p_ltp:>3}/{p_vol}`"
             )
 
             msg_lines.append(line)
 
         msg_lines.append(f"\nPCR: `{pcr:.2f}`")
-
         final_msg = "\n".join(msg_lines)
 
         requests.post(
@@ -488,11 +477,11 @@ def send_telegram_strikewise(index_name, ltp, atm, pcr, df, step):
                 "text": final_msg,
                 "parse_mode": "Markdown"
             },
-            timeout=5
+            timeout=10
         )
 
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"Error in send_telegram_strikewise: {e}")
 
 # ──────────────────────────────────────────────
 # CSS - CLEAN DARK TERMINAL
@@ -648,10 +637,10 @@ if found_expiry:
         # ──────────────────────────────────────────────
         # TELEGRAM ALERT — fires on every page load/refresh
         # ──────────────────────────────────────────────
-        send_telegram_alert(
-            st.session_state.index_choice, ltp, atm,
-            found_expiry, pcr, df
-        )
+        #send_telegram_alert(
+        #    st.session_state.index_choice, ltp, atm,
+        #    found_expiry, pcr, df
+        #)
 
         # ── Excel to Telegram ──
         send_excel_to_telegram(
@@ -670,32 +659,32 @@ if found_expiry:
         cfg["step"]
         )
 
-        send_telegram_strikewise_image(
-        st.session_state.index_choice,
-        ltp,
-        atm,
-        pcr,
-        df,
-        cfg["step"]
-        )
+        #send_telegram_strikewise_image(
+        #st.session_state.index_choice,
+        #ltp,
+        #atm,
+        #pcr,
+        #df,
+        #cfg["step"]
+        #)
         # Rename columns to match the new function's requirements
-        df_for_telegram = df.rename(columns={
-        "STRIKE": "STRIKE", 
-        "CE Volume": "_cv", 
-        "PE Volume": "_pv", 
-        "CE Δ OI": "_cd", 
-        "PE Δ OI": "_pd"
-        })
+        #df_for_telegram = df.rename(columns={
+        #"STRIKE": "STRIKE", 
+        #"CE Volume": "_cv", 
+        #"PE Volume": "_pv", 
+        #"CE Δ OI": "_cd", 
+        #"PE Δ OI": "_pd"
+        #})
 
         # Call the new dual-analysis function
-        send_telegram_combined_analysis(
-        index_name=st.session_state.index_choice,
-        ltp=ltp,
-        atm=atm,
-        pcr=pcr,
-        df=df_for_telegram,
-        step=cfg["step"]
-        )
+        #send_telegram_combined_analysis(
+        #index_name=st.session_state.index_choice,
+        #ltp=ltp,
+        #atm=atm,
+        #pcr=pcr,
+        #df=df_for_telegram,
+        #step=cfg["step"]
+        #)
         
 
         # ──────────────────────────────────────────────
