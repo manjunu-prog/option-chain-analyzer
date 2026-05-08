@@ -14,7 +14,7 @@ import io
 # ──────────────────────────────────────────────
 DHAN_ACCESS_TOKEN = "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzUxMiJ9.eyJwX2lwIjoiIiwic19pcCI6IiIsImlzcyI6ImRoYW4iLCJwYXJ0bmVySWQiOiIiLCJleHAiOjE3NzgzMjgwNDMsImlhdCI6MTc3ODI0MTY0MywidG9rZW5Db25zdW1lclR5cGUiOiJTRUxGIiwid2ViaG9va1VybCI6Imh0dHBzOi8vd2ViLmRoYW4uY28vaW5kZXgvcHJvZmlsZSIsImRoYW5DbGllbnRJZCI6IjExMDgwNjYwOTQifQ.oonStSRAhVxq7HDuDc4EF8OpKHBIN3vVqFvVHQcZD2KpLUT0JvV2--B2NriSEIep69HQ9VwHQasS-AGsCWHrEw"
 DHAN_CLIENT_ID    = "1108066094"
-TELEGRAM_TOKEN   = "8409482425:AAHJHwhUR0CfpeaZYgwixizHQa7b-xfAETc"
+TELEGRAM_TOKEN   = "7851529826:AAHfyHVrVZi5iQubljaNgde76gPhr8pxql4"
 TELEGRAM_CHAT_ID = "567677761"
 
 API_BASE        = "https://api.dhan.co/v2"
@@ -659,22 +659,22 @@ if found_expiry:
         cfg["step"]
         )
 
-        #send_telegram_strikewise_image(
-        #st.session_state.index_choice,
-        #ltp,
-        #atm,
-        #pcr,
-        #df,
-        #cfg["step"]
-        #)
-        # Rename columns to match the new function's requirements
-        #df_for_telegram = df.rename(columns={
-        #"STRIKE": "STRIKE", 
-        #"CE Volume": "_cv", 
-        #"PE Volume": "_pv", 
-        #"CE Δ OI": "_cd", 
-        #"PE Δ OI": "_pd"
-        #})
+        send_telegram_strikewise_image(
+        st.session_state.index_choice,
+        ltp,
+        atm,
+        pcr,
+        df,
+        cfg["step"]
+        )
+         Rename columns to match the new function's requirements
+        df_for_telegram = df.rename(columns={
+        "STRIKE": "STRIKE", 
+        "CE Volume": "_cv", 
+        "PE Volume": "_pv", 
+        "CE Δ OI": "_cd", 
+        "PE Δ OI": "_pd"
+        })
 
         # Call the new dual-analysis function
         #send_telegram_combined_analysis(
