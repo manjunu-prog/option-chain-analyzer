@@ -667,7 +667,7 @@ if found_expiry:
         df,
         cfg["step"]
         )
-        Rename columns to match the new function's requirements
+        #Rename columns to match the new function's requirements
         df_for_telegram = df.rename(columns={
         "STRIKE": "STRIKE", 
         "CE Volume": "_cv", 
