@@ -12,7 +12,7 @@ import io
 # ──────────────────────────────────────────────
 # CONFIG
 # ──────────────────────────────────────────────
-DHAN_ACCESS_TOKEN = "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzUxMiJ9.eyJwX2lwIjoiIiwic19pcCI6IiIsImlzcyI6ImRoYW4iLCJwYXJ0bmVySWQiOiIiLCJleHAiOjE3Nzg3Nzc4ODEsImlhdCI6MTc3ODY5MTQ4MSwidG9rZW5Db25zdW1lclR5cGUiOiJTRUxGIiwid2ViaG9va1VybCI6Imh0dHBzOi8vd2ViLmRoYW4uY28vaW5kZXgvcHJvZmlsZSIsImRoYW5DbGllbnRJZCI6IjExMDgwNjYwOTQifQ.DYUgcFiVUHn0oE247qZbD59UCoke2hXUX8_kJlm-6bKrxg9_eh2gSYKZBB-4_AH-6mcO_ROft1PFzs2s2AXRPw"
+DHAN_ACCESS_TOKEN = "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzUxMiJ9.eyJwX2lwIjoiIiwic19pcCI6IiIsImlzcyI6ImRoYW4iLCJwYXJ0bmVySWQiOiIiLCJleHAiOjE3Nzg4NjQ1MzMsImlhdCI6MTc3ODc3ODEzMywidG9rZW5Db25zdW1lclR5cGUiOiJTRUxGIiwid2ViaG9va1VybCI6Imh0dHBzOi8vd2ViLmRoYW4uY28vaW5kZXgvcHJvZmlsZSIsImRoYW5DbGllbnRJZCI6IjExMDgwNjYwOTQifQ.wfx6s4BxluBhpQvmzv5RyJlj3uLqnwDW_JCAe6sgLm8kLewbcDiRnic-kW01dR5CZ2vn40_fvdGsgxYDm_5B5w"
 DHAN_CLIENT_ID    = "1108066094"
 TELEGRAM_TOKEN   = "7851529826:AAHfyHVrVZi5iQubljaNgde76gPhr8pxql4"
 TELEGRAM_CHAT_ID = "567677761"
@@ -104,6 +104,116 @@ def send_telegram_combined_analysis(index_name, ltp, atm, pcr, df, step):
         print(f"Error generating dual chart: {e}")
 
 
+import pandas as pd
+import streamlit as st
+from PIL import Image, ImageDraw, ImageFont
+
+def render_strikewise_image_streamlit(index_name, ltp, atm, pcr, df, step):
+    try:
+        # Filter ATM ±5
+        df = df[(df["STRIKE"] >= atm - step*5) & (df["STRIKE"] <= atm + step*5)]
+        df = df.sort_values("STRIKE", ascending=False)
+
+        width, height = 800, 50 + len(df)*40 + 40
+        img = Image.new("RGB", (width, height), (15, 18, 25))
+        draw = ImageDraw.Draw(img)
+
+        font = ImageFont.load_default()
+
+        # Title
+        draw.text((20, 10), f"{index_name} | LTP: {ltp:,.0f}", fill=(255,255,255), font=font)
+
+        max_vol = max(df["_cv"].max(), df["_pv"].max(), 1)
+
+        # --- Calculate Global Top 3 Volumes Across Entire Visible Chart ---
+        all_volumes = pd.concat([df["_cv"], df["_pv"]]).dropna().unique()
+        all_volumes = sorted(all_volumes, reverse=True)
+        
+        top1 = all_volumes[0] if len(all_volumes) > 0 else -1
+        top2 = all_volumes[1] if len(all_volumes) > 1 else -1
+        top3 = all_volumes[2] if len(all_volumes) > 2 else -1
+
+        # Color definitions
+        BASE_GREEN = (34, 197, 94)   # Green for the dominating side
+        BASE_RED = (239, 68, 68)     # Red for the weaker side
+        BASE_GRAY = (156, 163, 175)  # Gray fallback if volumes are perfectly equal
+        
+        TOP1_PINK = (236, 72, 153)    # 1st Highest Volume
+        TOP2_ORANGE = (249, 115, 22)  # 2nd Highest Volume
+        TOP3_WHITE = (255, 255, 255)  # 3rd Highest Volume
+
+        # Helper function to decide final bar color
+        def determine_color(current_vol, opposing_vol):
+            # Step 1: Check Global High Volume Overrides
+            if current_vol == top1:
+                return TOP1_PINK
+            elif current_vol == top2:
+                return TOP2_ORANGE
+            elif current_vol == top3:
+                return TOP3_WHITE
+            
+            # Step 2: Fallback to Green/Red Concept
+            if current_vol > opposing_vol:
+                return BASE_GREEN
+            elif opposing_vol > current_vol:
+                return BASE_RED
+            else:
+                return BASE_GRAY
+
+        y = 50
+        bar_max_width = 200
+
+        for _, r in df.iterrows():
+            strike = int(r["STRIKE"])
+            c_vol = r["_cv"]
+            p_vol = r["_pv"]
+            c_delta = r["_cd"]
+            p_delta = r["_pd"]
+
+            # sentiment color (center strike text color - original logic unchanged)
+            if c_delta > p_delta:
+                color = (255, 80, 80)
+            elif p_delta > c_delta:
+                color = (80, 255, 120)
+            else:
+                color = (200, 200, 200)
+
+            # Assign bar colors based on new rules
+            ce_color = determine_color(c_vol, p_vol)
+            pe_color = determine_color(p_vol, c_vol)
+
+            # CE bar (left)
+            c_width = int((c_vol / max_vol) * bar_max_width)
+            draw.rectangle([20, y, 20 + c_width, y + 15], fill=ce_color)
+
+            # PE bar (right)
+            p_width = int((p_vol / max_vol) * bar_max_width)
+            draw.rectangle([width - 20 - p_width, y, width - 20, y + 15], fill=pe_color)
+
+            # strike text
+            if strike == atm:
+                txt = f"{strike} ATM"
+            else:
+                txt = f"{strike}"
+
+            # center text
+            draw.text((width//2 - 40, y), txt, fill=color, font=font)
+
+            # values
+            draw.text((20 + c_width + 5, y), f"{c_vol/1e5:.1f}L", fill=(255,255,255), font=font)
+            draw.text((width - 20 - p_width - 60, y), f"{p_vol/1e5:.1f}L", fill=(255,255,255), font=font)
+
+            y += 35
+
+        # PCR
+        draw.text((20, height - 30), f"PCR: {pcr:.2f}", fill=(255,255,255), font=font)
+
+        return img
+
+    except Exception as e:
+        st.error(f"Error rendering chart: {e}")
+        return None
+
 
 def send_telegram_strikewise_image(index_name, ltp, atm, pcr, df, step):
     try:
@@ -122,6 +232,41 @@ def send_telegram_strikewise_image(index_name, ltp, atm, pcr, df, step):
 
         max_vol = max(df["_cv"].max(), df["_pv"].max(), 1)
 
+        # --- Calculate Global Top 3 Volumes Across Entire Visible Chart ---
+        all_volumes = pd.concat([df["_cv"], df["_pv"]]).dropna().unique()
+        all_volumes = sorted(all_volumes, reverse=True)
+        
+        top1 = all_volumes[0] if len(all_volumes) > 0 else -1
+        top2 = all_volumes[1] if len(all_volumes) > 1 else -1
+        top3 = all_volumes[2] if len(all_volumes) > 2 else -1
+
+        # Color definitions
+        BASE_GREEN = (34, 197, 94)   # Green for the dominating side
+        BASE_RED = (239, 68, 68)     # Red for the weaker side
+        BASE_GRAY = (156, 163, 175)  # Gray fallback if volumes are perfectly equal
+        
+        TOP1_PINK = (236, 72, 153)    # 1st Highest Volume
+        TOP2_ORANGE = (249, 115, 22)  # 2nd Highest Volume
+        TOP3_WHITE = (255, 255, 255)  # 3rd Highest Volume
+
+        # Helper function to decide final bar color
+        def determine_color(current_vol, opposing_vol):
+            # Step 1: Check Global High Volume Overrides
+            if current_vol == top1:
+                return TOP1_PINK
+            elif current_vol == top2:
+                return TOP2_ORANGE
+            elif current_vol == top3:
+                return TOP3_WHITE
+            
+            # Step 2: Fallback to Green/Red Concept
+            if current_vol > opposing_vol:
+                return BASE_GREEN
+            elif opposing_vol > current_vol:
+                return BASE_RED
+            else:
+                return BASE_GRAY
+
         y = 50
         bar_max_width = 200
 
@@ -132,7 +277,7 @@ def send_telegram_strikewise_image(index_name, ltp, atm, pcr, df, step):
             c_delta = r["_cd"]
             p_delta = r["_pd"]
 
-            # sentiment color
+            # sentiment color (center strike text color - original logic unchanged)
             if c_delta > p_delta:
                 color = (255, 80, 80)   # red
             elif p_delta > c_delta:
@@ -140,13 +285,17 @@ def send_telegram_strikewise_image(index_name, ltp, atm, pcr, df, step):
             else:
                 color = (200, 200, 200)
 
+            # Assign bar colors based on new rules
+            ce_color = determine_color(c_vol, p_vol)
+            pe_color = determine_color(p_vol, c_vol)
+
             # CE bar (left)
             c_width = int((c_vol / max_vol) * bar_max_width)
-            draw.rectangle([20, y, 20 + c_width, y + 15], fill=(180,180,180))
+            draw.rectangle([20, y, 20 + c_width, y + 15], fill=ce_color)
 
             # PE bar (right)
             p_width = int((p_vol / max_vol) * bar_max_width)
-            draw.rectangle([width - 20 - p_width, y, width - 20, y + 15], fill=(180,180,180))
+            draw.rectangle([width - 20 - p_width, y, width - 20, y + 15], fill=pe_color)
 
             # strike text
             if strike == atm:
@@ -686,6 +835,17 @@ if found_expiry:
         #step=cfg["step"]
         #)
         
+
+        chart_image = render_strikewise_image_streamlit(
+            st.session_state.index_choice, ltp, atm, pcr, df, cfg["step"]
+        )
+
+        if chart_image is not None:
+            st.image(
+                chart_image, 
+                caption=f"{st.session_state.index_choice} Volume Chart", 
+                use_container_width=True
+            )
 
         # ──────────────────────────────────────────────
         # TOP PANEL (METRICS)
