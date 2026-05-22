@@ -6,3 +6,4 @@ matplotlib
 pytz
 Pillow
 openpyxl
+kiteconnect
