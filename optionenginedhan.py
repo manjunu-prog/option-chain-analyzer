@@ -33,10 +33,12 @@ st.title("📈 DHAN NIFTY Option Buying Engine")
 # USER CONFIG
 # ==========================================================
 
-st.sidebar.header("DHAN API CONFIG")
+# ── HARDCODED CREDENTIALS — update these before running ──
+CLIENT_ID    = "1108066094"
+ACCESS_TOKEN = "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzUxMiJ9.eyJwX2lwIjoiIiwic19pcCI6IiIsImlzcyI6ImRoYW4iLCJwYXJ0bmVySWQiOiIiLCJleHAiOjE3Nzk4MTYzNjcsImlhdCI6MTc3OTcyOTk2NywidG9rZW5Db25zdW1lclR5cGUiOiJTRUxGIiwid2ViaG9va1VybCI6Imh0dHBzOi8vd2ViLmRoYW4uY28vaW5kZXgvcHJvZmlsZSIsImRoYW5DbGllbnRJZCI6IjExMDgwNjYwOTQifQ.DEfXYPcDU1z9eYTqTd3Bu7iAUiOlOZUICf5S7jZggHtqPRUV9kGkdk4OS-vyMjirPhX3AderOvR00tBvuG3XhQ"
+# ─────────────────────────────────────────────────────────
 
-CLIENT_ID = st.sidebar.text_input("Client ID")
-ACCESS_TOKEN = st.sidebar.text_input("Access Token", type="password")
+st.sidebar.header("SETTINGS")
 
 MAX_LOTS = st.sidebar.number_input(
     "Max Lots",
@@ -226,8 +228,8 @@ def create_order_json(row, qty, weight):
 
 if st.button("🚀 Run Live Dhan Analysis"):
 
-    if not CLIENT_ID or not ACCESS_TOKEN:
-        stop_trade("Enter Dhan credentials")
+    if CLIENT_ID == "YOUR_CLIENT_ID_HERE" or ACCESS_TOKEN == "YOUR_ACCESS_TOKEN_HERE":
+        stop_trade("Please update CLIENT_ID and ACCESS_TOKEN in the script before running.")
 
     # ======================================================
     # STEP 1
