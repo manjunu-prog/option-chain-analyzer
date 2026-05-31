@@ -787,10 +787,10 @@ if found_expiry:
         # ──────────────────────────────────────────────
         # TELEGRAM ALERT — fires on every page load/refresh
         # ──────────────────────────────────────────────
-        #send_telegram_alert(
-        #    st.session_state.index_choice, ltp, atm,
-        #    found_expiry, pcr, df
-        #)
+        send_telegram_alert(
+            st.session_state.index_choice, ltp, atm,
+            found_expiry, pcr, df
+        )
 
         # ── Excel to Telegram ──
         send_excel_to_telegram(
