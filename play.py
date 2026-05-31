@@ -571,9 +571,13 @@ def send_telegram_strikewise(index_name, ltp, atm, pcr, df, step):
         msg_lines = []
         msg_lines.append(f"📊 *{index_name}* | LTP: `{ltp:,.0f}`\n")
 
-        # Filter for ATM ±5 strikes and sort
-        df = df[(df["STRIKE"] >= atm - step*5) & (df["STRIKE"] <= atm + step*5)]
-        df_sorted = df.sort_values("STRIKE", ascending=False)
+        # 1. Calculate total volume per strike to find the most active ones
+        df = df.copy()  # Avoid SettingWithCopyWarning
+        df["TOTAL_VOL"] = df["_cv"] + df["_pv"]
+
+        # 2. Get the top 3 strikes based on total volume and sort them descending by strike price
+        df_top3 = df.nlargest(3, "TOTAL_VOL")
+        df_sorted = df_top3.sort_values("STRIKE", ascending=False)
 
         def short_lakh(val):
             return f"{val / 1e5:.1f}L"
@@ -583,9 +587,7 @@ def send_telegram_strikewise(index_name, ltp, atm, pcr, df, step):
             c_vol_raw = r["_cv"]
             p_vol_raw = r["_pv"]
 
-            # Icon logic based on Volume instead of Delta OI
-            # 🟢 Green: Call Volume > Put Volume
-            # 🔴 Red: Put Volume > Call Volume
+            # Icon logic based on Volume
             if c_vol_raw > p_vol_raw:
                 icon = "🟢"
             elif p_vol_raw > c_vol_raw:
@@ -593,7 +595,7 @@ def send_telegram_strikewise(index_name, ltp, atm, pcr, df, step):
             else:
                 icon = "⚪"
 
-            # Strike label formatting
+            # Strike label formatting (keeping ATM tag if it matches)
             if strike == atm:
                 strike_txt = f"{icon} {strike} ATM"
             else:
@@ -603,7 +605,6 @@ def send_telegram_strikewise(index_name, ltp, atm, pcr, df, step):
             c_vol = short_lakh(c_vol_raw)
             p_vol = short_lakh(p_vol_raw)
             
-            # Ensure LTP columns match your DataFrame keys (usually 'C LTP' and 'P LTP')
             c_ltp = f"{float(r['C LTP']):.0f}"
             p_ltp = f"{float(r['P LTP']):.0f}"
 
@@ -622,7 +623,7 @@ def send_telegram_strikewise(index_name, ltp, atm, pcr, df, step):
         requests.post(
             f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
             json={
-                "chat_id": TELEGRAM_CHAT_ID,
+                chat_id: TELEGRAM_CHAT_ID,
                 "text": final_msg,
                 "parse_mode": "Markdown"
             },
