@@ -7,3 +7,7 @@ pytz
 Pillow
 openpyxl
 kiteconnect
+pyotp
+psycopg2-binary
+fyers-apiv3
+streamlit-autorefresh
