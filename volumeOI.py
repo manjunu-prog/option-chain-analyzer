@@ -64,36 +64,66 @@ def execute_auto_login(fy_id, pin, totp_key, app_id, app_type, app_secret, redir
 def color_coding(val):
     color = ''
     if isinstance(val, str):
-        if val.startswith('+'): color = '#4ade80'
-        elif val.startswith('-'): color = '#f87171'
+        if val.startswith('+') or "🟢" in val or "BUY" in val: color = '#4ade80'
+        elif val.startswith('-') or "🔴" in val or "SHORTS" in val: color = '#f87171'
     return f'color: {color}' if color else ''
 
+# --- ADVANCED RADAR SIGNAL INTERPRETER ---
+def calculate_orderflow_signal(d_ce_oi, d_pe_oi, d_ce_vo, d_pe_vo):
+    if d_ce_oi == 0 and d_pe_oi == 0 and d_ce_vo == 0 and d_pe_vo == 0:
+        return "⚖️ NO FLOW"
+    
+    # User Logic: Call Writing outpaces Put Writing, and Put Volume outpaces Call Volume
+    if d_ce_oi > d_pe_oi and d_pe_vo > d_ce_vo:
+        return "🔴 PE BUY"
+    # Inverse Logic: Put Writing outpaces Call Writing, and Call Volume outpaces Put Volume
+    elif d_pe_oi > d_ce_oi and d_ce_vo > d_pe_vo:
+        return "🟢 CE BUY"
+    # Call Writing outpaces Put Writing, but Call Volume dominates (Short sellers capping standard moves)
+    elif d_ce_oi > d_pe_oi and d_ce_vo > d_pe_vo:
+        return "📉 CE SHORTS"
+    # Put Writing outpaces Call Writing, but Put Volume dominates (Short sellers setting base support)
+    elif d_pe_oi > d_ce_oi and d_pe_vo > d_ce_vo:
+        return "📈 PE SHORTS"
+    
+    return "⚖️ NEUTRAL FLOW"
+
 # --- POP-UP MODAL ENGINE ---
-@st.dialog("📋 Historical Timeline Ledger", width="large")
+@st.dialog("📋 Combined Intel Timeline Ledger", width="large")
 def show_strike_popup(strike, df_flow, is_atm):
     title_decorator = f"🎯 Strike {strike} (ATM)" if is_atm else f"Strike {strike}"
     st.subheader(f"Granular Flow Ledger for {title_decorator}")
-    st.caption("Chronological 3-minute snapshot delta steps (Newest interval logs on top)")
+    st.caption("Chronological 3-minute combined orderflow intelligence steps (Newest logs on top)")
     
     df_hist_strike = df_flow[df_flow['strike'] == strike].copy().sort_values('timestamp', ascending=True)
-    df_hist_strike['Δ CE OI'] = df_hist_strike['ce_oi'].diff().fillna(0).astype(int)
-    df_hist_strike['Δ PE OI'] = df_hist_strike['pe_oi'].diff().fillna(0).astype(int)
-    df_hist_strike['Δ CE Vol'] = df_hist_strike['ce_vol'].diff().fillna(0).astype(int)
-    df_hist_strike['Δ PE Vol'] = df_hist_strike['pe_vol'].diff().fillna(0).astype(int)
+    df_hist_strike['d_ce_oi'] = df_hist_strike['ce_oi'].diff().fillna(0).astype(int)
+    df_hist_strike['d_pe_oi'] = df_hist_strike['pe_oi'].diff().fillna(0).astype(int)
+    df_hist_strike['d_ce_vo'] = df_hist_strike['ce_vol'].diff().fillna(0).astype(int)
+    df_hist_strike['d_pe_vo'] = df_hist_strike['pe_vol'].diff().fillna(0).astype(int)
+    
+    # Calculate orderflow tags row-by-row
+    signals = []
+    for _, row in df_hist_strike.iterrows():
+        signals.append(calculate_orderflow_signal(row['d_ce_oi'], row['d_pe_oi'], row['d_ce_vo'], row['d_pe_vo']))
+    df_hist_strike['Orderflow Signal'] = signals
     
     df_hist_strike.sort_values('timestamp', ascending=False, inplace=True)
-    df_hist_strike['Time/Date'] = df_hist_strike['timestamp'].dt.strftime('%H:%M %p')
+    df_hist_strike['Time/Date'] = df_hist_strike['timestamp'].dt.strftime('%H:%M:%S %p')
     
-    for col in ['Δ CE OI', 'Δ CE Vol', 'Δ PE OI', 'Δ PE Vol']:
-        df_hist_strike[col] = df_hist_strike[col].apply(lambda x: f"+{int(x):,}" if x > 0 else (f"{int(x):,}" if x < 0 else "0"))
-        
-    col1, col2 = st.columns(2)
-    with col1:
-        st.markdown("**Change in Open Interest**")
-        st.dataframe(df_hist_strike[['Time/Date', 'Δ CE OI', 'Δ PE OI']].rename(columns={'Δ CE OI': 'Change in OI - CE', 'Δ PE OI': 'Change in OI - PE'}), use_container_width=True, hide_index=True)
-    with col2:
-        st.markdown("**Change in Volume**")
-        st.dataframe(df_hist_strike[['Time/Date', 'Δ CE Vol', 'Δ PE Vol']].rename(columns={'Δ CE Vol': 'Change in Volume - CE', 'Δ PE Vol': 'Change in Volume - PE'}), use_container_width=True, hide_index=True)
+    # Format layout dataframes
+    df_popup_display = pd.DataFrame()
+    df_popup_display['Time/Date'] = df_hist_strike['Time/Date']
+    df_popup_display['🎯 ACTION SIGNAL'] = df_hist_strike['Orderflow Signal']
+    df_popup_display['Change in OI - CE'] = df_hist_strike['d_ce_oi'].apply(lambda x: f"+{int(x):,}" if x > 0 else (f"{int(x):,}" if x < 0 else "0"))
+    df_popup_display['Change in OI - PE'] = df_hist_strike['d_pe_oi'].apply(lambda x: f"+{int(x):,}" if x > 0 else (f"{int(x):,}" if x < 0 else "0"))
+    df_popup_display['Change in Vol - CE'] = df_hist_strike['d_ce_vo'].apply(lambda x: f"+{int(x):,}" if x > 0 else (f"{int(x):,}" if x < 0 else "0"))
+    df_popup_display['Change in Vol - PE'] = df_hist_strike['d_pe_vo'].apply(lambda x: f"+{int(x):,}" if x > 0 else (f"{int(x):,}" if x < 0 else "0"))
+    
+    styled_popup = df_popup_display.style.map(
+        color_coding, 
+        subset=['🎯 ACTION SIGNAL', 'Change in OI - CE', 'Change in OI - PE', 'Change in Vol - CE', 'Change in Vol - PE']
+    )
+    st.dataframe(styled_popup, use_container_width=True, hide_index=True)
 
 # --- FRONTEND INTERFACE ---
 st.title("📊 NIFTY 50 Intraday OI & Volume Delta Tracker")
@@ -175,11 +205,8 @@ if last_db_entry and last_db_entry[0].date() != get_ist_now().date():
 current_time = get_ist_now()
 inserted_strikes = set()
 
-# Running totals for calculating global macro metrics across the 11 target strikes
-running_ce_oi = 0
-running_ce_vol = 0
-running_pe_oi = 0
-running_pe_vol = 0
+running_ce_oi, running_ce_vol = 0, 0
+running_pe_oi, running_pe_vol = 0, 0
 
 for contract in options_list:
     strike = contract.get("strike_price")
@@ -195,7 +222,6 @@ for contract in options_list:
             pe_oi = oi if opt_type == "PE" else int(counterpart.get("oi", 0))
             pe_vol = vol if opt_type == "PE" else int(counterpart.get("volume", 0))
             
-            # Add up current strike values to aggregate grand totals
             running_ce_oi += ce_oi
             running_ce_vol += ce_vol
             running_pe_oi += pe_oi
@@ -205,7 +231,6 @@ for contract in options_list:
                       (current_time, strike, ce_oi, ce_vol, pe_oi, pe_vol))
             inserted_strikes.add(strike)
 
-# Commit overall 11-strike aggregate records 
 if inserted_strikes:
     c.execute("INSERT INTO overall_delta_flow VALUES (%s, %s, %s, %s, %s)", 
               (current_time, running_ce_oi, running_ce_vol, running_pe_oi, running_pe_vol))
@@ -227,7 +252,7 @@ m_col3.metric("Last Dynamic Log Update", current_time.strftime('%H:%M:%S'))
 st.markdown("---")
 
 # =====================================================================
-# FEATURE NEW: OVERALL MACRO CHANGE IN OI & VOLUME EVERY 3MINS
+# OVERALL MACRO CHANGE IN OI & VOLUME EVERY 3MINS
 # =====================================================================
 st.subheader("🌍 Total Aggregate Market Flow Tracker (All 11 Strikes Combined)")
 st.caption("Chronological time ledger showing overall combined Volume and Open Interest changes tracking every 3 minutes.")
@@ -238,22 +263,24 @@ if len(df_overall) >= 2:
     df_overall['Δ Total CE Vol'] = df_overall['total_ce_vol'].diff().fillna(0).astype(int)
     df_overall['Δ Total PE Vol'] = df_overall['total_pe_vol'].diff().fillna(0).astype(int)
     
-    # Sort with newest times at top
+    # Generate overall orderflow macro tags
+    macro_signals = []
+    for _, row in df_overall.iterrows():
+        macro_signals.append(calculate_orderflow_signal(row['Δ Total CE OI'], row['Δ Total PE OI'], row['Δ Total CE Vol'], row['Δ Total PE Vol']))
+    df_overall['Macro Directive'] = macro_signals
+
     df_overall_display = df_overall.sort_values('timestamp', ascending=False).copy()
     df_overall_display['Time/Date'] = df_overall_display['timestamp'].dt.strftime('%H:%M %p')
     
-    # Formatting numbers with plus indicators
     for col in ['Δ Total CE OI', 'Δ Total PE OI', 'Δ Total CE Vol', 'Δ Total PE Vol']:
         df_overall_display[col] = df_overall_display[col].apply(lambda x: f"+{int(x):,}" if x > 0 else (f"{int(x):,}" if x < 0 else "0"))
     
-    # Structure matching the user's side-by-side screenshot template
     col_macro_oi, col_macro_vol = st.columns(2)
-    
     with col_macro_oi:
         st.markdown("### 📊 Combined Change in Open Interest (All Strikes)")
-        macro_oi_df = df_overall_display[['Time/Date', 'Δ Total CE OI', 'Δ Total PE OI']].copy()
-        macro_oi_df.columns = ['Time/Date', 'Change in OI - CE', 'Change in OI - PE']
-        st.dataframe(macro_oi_df.style.map(color_coding, subset=['Change in OI - CE', 'Change in OI - PE']), use_container_width=True, hide_index=True)
+        macro_oi_df = df_overall_display[['Time/Date', 'Macro Directive', 'Δ Total CE OI', 'Δ Total PE OI']].copy()
+        macro_oi_df.columns = ['Time/Date', '⚡ MARKET SIGNAL', 'Change in OI - CE', 'Change in OI - PE']
+        st.dataframe(macro_oi_df.style.map(color_coding, subset=['⚡ MARKET SIGNAL', 'Change in OI - CE', 'Change in OI - PE']), use_container_width=True, hide_index=True)
         
     with col_macro_vol:
         st.markdown("### 📈 Combined Change in Volume (All Strikes)")
@@ -261,12 +288,12 @@ if len(df_overall) >= 2:
         macro_vol_df.columns = ['Time/Date', 'Change in Volume - CE', 'Change in Volume - PE']
         st.dataframe(macro_vol_df.style.map(color_coding, subset=['Change in Volume - CE', 'Change in Volume - PE']), use_container_width=True, hide_index=True)
 else:
-    st.info("🕒 Gathering aggregate macro metric snapshots. Overall 3-minute interval data rows will display here on the next auto-refresh step.")
+    st.info("🕒 Gathering aggregate macro metric snapshots. Overall data will display here on the next auto-refresh step.")
 
 st.markdown("---")
 
 # =====================================================================
-# INDIVIDUAL STRIKES MONITOR MATRIX (WITH MODALS)
+# INDIVIDUAL STRIKES MONITOR MATRIX WITH COMBINED INTELLIGENCE SIGNALS
 # =====================================================================
 if len(unique_times) >= 2:
     t_current = unique_times[-1]
@@ -297,15 +324,23 @@ if len(unique_times) >= 2:
         def fmt(val): return f"+{int(val):,}" if val > 0 else (f"{int(val):,}" if val < 0 else "0")
         is_atm = (strike == atm_strike)
         
+        # Calculate active 3-minute row snapshot signature signal
+        active_row_signal = calculate_orderflow_signal(d_ce_oi, d_pe_oi, d_ce_vo, d_pe_vo)
+        
         row_container = st.container(border=True)
         with row_container:
-            btn_col, data_col = st.columns([1.5, 8.5])
+            btn_col, signal_col, data_col = st.columns([1.5, 1.5, 7])
             
             with btn_col:
                 btn_label = f"🎯 {strike} (ATM)" if is_atm else f"🔢 Strike {strike}"
                 st.markdown(f"<div style='padding-top: 4px; font-weight: bold;'>{btn_label}</div>", unsafe_allow_html=True)
                 if st.button("🔍 View History", key=f"btn_{strike}", use_container_width=True):
                     show_strike_popup(strike, df_flow, is_atm)
+            
+            with signal_col:
+                # Format text strings colors for live dashboard markers
+                sig_color = "#4ade80" if "BUY" in active_row_signal or "🟢" in active_row_signal else ("#f87171" if "SHORTS" in active_row_signal or "🔴" in active_row_signal else "rgba(255,255,255,0.7)")
+                st.markdown(f"<div style='padding-top: 4px; font-weight: bold; color: {sig_color};'>{active_row_signal}</div>", unsafe_allow_html=True)
                     
             with data_col:
                 sub_col1, sub_col2, sub_col3, sub_col4 = st.columns(4)
