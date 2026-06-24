@@ -93,14 +93,19 @@ def color_coding(val):
         elif val.startswith('-') or "🔴" in val or "SHORTS" in val: color = '#f87171' 
     return f'color: {color}' if color else ''
 
-# --- ADVANCED RADAR SIGNAL INTERPRETER ---
-def calculate_orderflow_signal(d_ce_oi, d_pe_oi, d_ce_vo, d_pe_vo):
+# --- ADVANCED RADAR SIGNAL INTERPRETER WITH SURGE ANCHORS ---
+def calculate_orderflow_signal(d_ce_oi, d_pe_oi, d_ce_vo, d_pe_vo, ce_vol_threshold=None, pe_vol_threshold=None):
     if d_ce_oi == 0 and d_pe_oi == 0 and d_ce_vo == 0 and d_pe_vo == 0:
         return "⚖️ NO FLOW"
+    
+    # Check for volume surge exceptions compared to recent context history
+    is_ce_surge = ce_vol_threshold is not None and d_ce_vo > ce_vol_threshold and d_ce_vo > 100000
+    is_pe_surge = pe_vol_threshold is not None and d_pe_vo > pe_vol_threshold and d_pe_vo > 100000
+    
     if d_ce_oi > d_pe_oi and d_pe_vo > d_ce_vo:
-        return "🔴 PE BUY"
+        return "🔴🔴🔴 PE BUY (Heavily Bought)" if is_pe_surge else "🔴 PE BUY"
     elif d_pe_oi > d_ce_oi and d_ce_vo > d_pe_vo:
-        return "🟢 CE BUY"
+        return "🟢🟢🟢 CE BUY (Heavily Bought)" if is_ce_surge else "🟢 CE BUY"
     elif d_ce_oi > d_pe_oi and d_ce_vo > d_pe_vo:
         return "📉 CE SHORTS"
     elif d_pe_oi > d_ce_oi and d_pe_vo > d_ce_vo:
@@ -120,21 +125,30 @@ def show_strike_popup(strike, df_flow, is_atm_anchor):
     df_st['d_ce_vo'] = df_st['ce_vol'].diff().fillna(0).astype(int)
     df_st['d_pe_vo'] = df_st['pe_vol'].diff().fillna(0).astype(int)
     
+    # Calculate rolling background boundaries across trailing rows for surge lookups
     signals = []
-    for _, r in df_st.iterrows():
-        signals.append(calculate_orderflow_signal(r['d_ce_oi'], r['d_pe_oi'], r['d_ce_vo'], r['d_pe_vo']))
-    df_st['🎯 ACTION SIGNAL'] = signals
+    df_st_reset = df_st.reset_index(drop=True)
+    for idx, row in df_st_reset.iterrows():
+        # Compile preceding 12 data points (representing ~30-45 minutes of historical background context)
+        start_idx = max(0, idx - 12)
+        window = df_st_reset.iloc[start_idx:idx]
+        
+        ce_thresh = window['d_ce_vo'].max() * 2.5 if not window.empty else None
+        pe_thresh = window['d_pe_vo'].max() * 2.5 if not window.empty else None
+        
+        signals.append(calculate_orderflow_signal(row['d_ce_oi'], row['d_pe_oi'], row['d_ce_vo'], row['d_pe_vo'], ce_thresh, pe_thresh))
     
-    df_st.sort_values('timestamp', ascending=False, inplace=True)
-    df_st['Time'] = df_st['timestamp'].dt.strftime('%H:%M:%S %p')
+    df_st_reset['🎯 ACTION SIGNAL'] = signals
+    df_st_processed = df_st_reset.sort_values('timestamp', ascending=False)
+    df_st_processed['Time'] = df_st_processed['timestamp'].dt.strftime('%H:%M:%S %p')
     
     df_render = pd.DataFrame()
-    df_render['Timestamp'] = df_st['Time']
-    df_render['🎯 ACTION SIGNAL'] = df_st['🎯 ACTION SIGNAL']
-    df_render['Change in OI - CE'] = df_st['d_ce_oi'].apply(lambda x: f"+{int(x):,}" if x > 0 else (f"{int(x):,}" if x < 0 else "0"))
-    df_render['Change in OI - PE'] = df_st['d_pe_oi'].apply(lambda x: f"+{int(x):,}" if x > 0 else (f"{int(x):,}" if x < 0 else "0"))
-    df_render['Change in Vol - CE'] = df_st['d_ce_vo'].apply(lambda x: f"+{int(x):,}" if x > 0 else (f"{int(x):,}" if x < 0 else "0"))
-    df_render['Change in Vol - PE'] = df_st['d_pe_vo'].apply(lambda x: f"+{int(x):,}" if x > 0 else (f"{int(x):,}" if x < 0 else "0"))
+    df_render['Timestamp'] = df_st_processed['Time']
+    df_render['🎯 ACTION SIGNAL'] = df_st_processed['🎯 ACTION SIGNAL']
+    df_render['Change in OI - CE'] = df_st_processed['d_ce_oi'].apply(lambda x: f"+{int(x):,}" if x > 0 else (f"{int(x):,}" if x < 0 else "0"))
+    df_render['Change in OI - PE'] = df_st_processed['d_pe_oi'].apply(lambda x: f"+{int(x):,}" if x > 0 else (f"{int(x):,}" if x < 0 else "0"))
+    df_render['Change in Vol - CE'] = df_st_processed['d_ce_vo'].apply(lambda x: f"+{int(x):,}" if x > 0 else (f"{int(x):,}" if x < 0 else "0"))
+    df_render['Change in Vol - PE'] = df_st_processed['d_pe_vo'].apply(lambda x: f"+{int(x):,}" if x > 0 else (f"{int(x):,}" if x < 0 else "0"))
     
     styled_popup = df_render.style.map(
         color_coding, 
@@ -169,7 +183,6 @@ def backup_and_send_telegram(supabase_conn):
         else: st.error(f"Telegram Failure: {response.json()}")
     except Exception as ex: st.error(f"Backup Error: {ex}")
 
-
 # =====================================================================
 # SIDEBAR NAVIGATION INTERFACE: MODE SELECTOR SWITCH
 # =====================================================================
@@ -178,12 +191,10 @@ with st.sidebar:
     app_mode = st.radio("Select Active Core Node Environment", ["🔴 Live Exchange Node", "📁 Offline DB File Lookback"])
     st.markdown("---")
 
-# Initialize macro layout values to avoid scope errors
 offline_data_ready = False
 df_history, df_flow = pd.DataFrame(), pd.DataFrame()
 
 if app_mode == "🔴 Live Exchange Node":
-    # Auto-refresh only running during live tracking view sessions
     st_autorefresh(interval=180000, key="matrix_autorefresh")
     
     with st.sidebar:
@@ -241,7 +252,6 @@ if app_mode == "🔴 Live Exchange Node":
     chain_data = chain_response.get("data", {})
     options_list = chain_data.get("optionsChain", [])
 
-    # --- PROCESS REALTIME RECORDS TO SUPABASE ---
     total_ce_oi, total_pe_oi, total_ce_vol, total_pe_vol = 0, 0, 0, 0
     strike_oi_totals, current_strike_data = {}, []
     target_strikes = [atm_strike + (i * 50) for i in range(-5, 6)]
@@ -251,7 +261,6 @@ if app_mode == "🔴 Live Exchange Node":
         oi_val, vol_val, ltp_val = int(contract.get("oi", 0)), int(contract.get("volume", 0)), float(contract.get("ltp", 0.0))
         strike_oi_totals[strike] = strike_oi_totals.get(strike, 0) + oi_val
         
-        # Build structured object arrays
         match = next((d for d in current_strike_data if d['strike'] == strike), None)
         if not match:
             match = {"strike": strike, "ce_oi": 0, "ce_vol": 0, "ce_ltp": 0.0, "pe_oi": 0, "pe_vol": 0, "pe_ltp": 0.0}
@@ -267,13 +276,11 @@ if app_mode == "🔴 Live Exchange Node":
     matched_put_contract = min([c for c in options_list if c.get("option_type") == "PE"], key=lambda x: abs(float(x.get("ltp", 0)) - float(atm_call_contract.get("ltp", 0))))
     matched_put_strike = matched_put_contract.get("strike_price")
 
-    # Sync snapshot maps directly with Supabase Postgres tables
     try:
         conn = psycopg2.connect(st.secrets["SUPABASE_URI"]); conn.autocommit = True; c = conn.cursor()
         c.execute("CREATE TABLE IF NOT EXISTS flow_history (timestamp TIMESTAMP, total_ce_oi BIGINT, total_pe_oi BIGINT, atm_ce_oi BIGINT, atm_pe_oi BIGINT)")
         c.execute("CREATE TABLE IF NOT EXISTS strike_flow (timestamp TIMESTAMP, strike INTEGER, ce_oi BIGINT, ce_vol BIGINT, ce_ltp REAL, pe_oi BIGINT, pe_vol BIGINT, pe_ltp REAL)")
         
-        # Fresh trading day slate wipe parameters
         c.execute("SELECT timestamp FROM flow_history ORDER BY timestamp DESC LIMIT 1")
         last_entry = c.fetchone()
         if last_entry and last_entry[0].date() != get_ist_now().date():
@@ -301,7 +308,6 @@ else:
         
     if uploaded_backup is not None:
         try:
-            # Drop uploaded binary streams straight into local filesystem wrappers
             with open("temp_lookback.db", "wb") as f:
                 f.write(uploaded_backup.getbuffer())
                 
@@ -335,19 +341,17 @@ t_current, t_prev = unique_times[-1], unique_times[-2]
 df_curr = df_flow[df_flow['timestamp'] == t_current].set_index('strike')
 df_prev = df_flow[df_flow['timestamp'] == t_prev].set_index('strike')
 
-# Resolve anchors based on final row entry states inside database timeline mappings
 if app_mode == "📁 Offline DB File Lookback":
-    # Extrapolate context properties out of the loaded dataframe arrays directly
     target_strikes = sorted(df_flow['strike'].unique())
-    atm_strike = target_strikes[len(target_strikes)//2] # Estimate ATM center balance index
-    nifty_spot = df_curr.loc[atm_strike, 'ce_ltp'] if atm_strike in df_curr.index else 0.0 # Placeholder
+    atm_strike = target_strikes[len(target_strikes)//2] 
+    nifty_spot = df_curr.loc[atm_strike, 'ce_ltp'] if atm_strike in df_curr.index else 0.0 
     open_price, prev_close, vix_pct_change, top25_adv, vix_lp, dte = 0.0, 0.0, 0.0, 0, 15.0, 1
     total_ce_vol = df_curr['ce_vol'].sum()
     total_pe_vol = df_curr['pe_vol'].sum()
     vol_dominance = "PE Dominance" if total_pe_vol > total_ce_vol else "CE Dominance"
     synthetic_straddle_price = float(df_curr.loc[atm_strike, 'ce_ltp'] + df_curr.loc[atm_strike, 'pe_ltp']) if atm_strike in df_curr.index else 0.0
 
-# --- CALCULATE DELTA DATA PANELS ---
+# --- CALCULATE DELTA DATA PANELS WITH HISTORICAL BOUNDARIES ---
 df_delta = pd.DataFrame(index=target_strikes)
 df_delta['Δ CE Vol'] = df_curr['ce_vol'] - df_prev['ce_vol']
 df_delta['Δ CE OI'] = df_curr['ce_oi'] - df_prev['ce_oi']
@@ -365,7 +369,18 @@ for strike_idx in target_strikes:
     d_pe_oi = df_delta.loc[strike_idx, 'Δ PE OI'] if strike_idx in df_delta.index else 0
     d_ce_vo = df_delta.loc[strike_idx, 'Δ CE Vol'] if strike_idx in df_delta.index else 0
     d_pe_vo = df_delta.loc[strike_idx, 'Δ PE Vol'] if strike_idx in df_delta.index else 0
-    active_row_signals.append(calculate_orderflow_signal(d_ce_oi, d_pe_oi, d_ce_vo, d_pe_vo))
+    
+    # Calculate a statistical threshold from the preceding 12 data slices for the live grid lookups
+    df_prior_st = df_flow[(df_flow['strike'] == strike_idx) & (df_flow['timestamp'] < t_current)].copy().sort_values('timestamp', ascending=True)
+    if len(df_prior_st) >= 2:
+        df_prior_st['diff_ce_vo'] = df_prior_st['ce_vol'].diff()
+        df_prior_st['diff_pe_vo'] = df_prior_st['pe_vol'].diff()
+        ce_thresh = df_prior_st['diff_ce_vo'].tail(12).max() * 2.5
+        pe_thresh = df_prior_st['diff_pe_vo'].tail(12).max() * 2.5
+    else:
+        ce_thresh, pe_thresh = None, None
+        
+    active_row_signals.append(calculate_orderflow_signal(d_ce_oi, d_pe_oi, d_ce_vo, d_pe_vo, ce_thresh, pe_thresh))
 
 df_delta['🎯 ACTIVE RADAR SIGNAL'] = active_row_signals
 
