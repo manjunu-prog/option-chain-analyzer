@@ -93,19 +93,33 @@ def color_coding(val):
         elif val.startswith('-') or "🔴" in val or "SHORTS" in val: color = '#f87171' 
     return f'color: {color}' if color else ''
 
-# --- ADVANCED RADAR SIGNAL INTERPRETER WITH SURGE ANCHORS ---
-def calculate_orderflow_signal(d_ce_oi, d_pe_oi, d_ce_vo, d_pe_vo, ce_vol_threshold=None, pe_vol_threshold=None):
+# --- MULTI-SESSION PROGRESSIVE MOMENTUM SIGNAL INTERPRETER ---
+def calculate_progressive_signal(d_ce_oi, d_pe_oi, d_ce_vo, d_pe_vo, ce_windows=None, pe_windows=None):
     if d_ce_oi == 0 and d_pe_oi == 0 and d_ce_vo == 0 and d_pe_vo == 0:
         return "⚖️ NO FLOW"
     
-    # Check for volume surge exceptions compared to recent context history
-    is_ce_surge = ce_vol_threshold is not None and d_ce_vo > ce_vol_threshold and d_ce_vo > 100000
-    is_pe_surge = pe_vol_threshold is not None and d_pe_vo > pe_vol_threshold and d_pe_vo > 100000
+    # Establish default parameters if history is absent
+    if ce_windows is None: ce_windows = [float('inf'), float('inf'), float('inf')]
+    if pe_windows is None: pe_windows = [float('inf'), float('inf'), float('inf')]
     
+    # Calculate circles based on crossed 30-minute thresholds (Minimum 50k absolute validation filter to block low volume noise)
+    ce_circles = 1
+    if d_ce_vo > 50000:
+        if d_ce_vo > ce_windows[0]: ce_circles = 2
+        if d_ce_vo > ce_windows[0] and d_ce_vo > ce_windows[1]: ce_circles = 3
+        if d_ce_vo > ce_windows[0] and d_ce_vo > ce_windows[1] and d_ce_vo > ce_windows[2]: ce_circles = 4
+        
+    pe_circles = 1
+    if d_pe_vo > 50000:
+        if d_pe_vo > pe_windows[0]: pe_circles = 2
+        if d_pe_vo > pe_windows[0] and d_pe_vo > pe_windows[1]: pe_circles = 3
+        if d_pe_vo > pe_windows[0] and d_pe_vo > pe_windows[1] and d_pe_vo > pe_windows[2]: pe_circles = 4
+
+    # Output Directional Label Matrix
     if d_ce_oi > d_pe_oi and d_pe_vo > d_ce_vo:
-        return "🔴🔴🔴 PE BUY (Heavily Bought)" if is_pe_surge else "🔴 PE BUY"
+        return f"{'🔴' * pe_circles} PE BUY" if pe_circles > 1 else "🔴 PE BUY"
     elif d_pe_oi > d_ce_oi and d_ce_vo > d_pe_vo:
-        return "🟢🟢🟢 CE BUY (Heavily Bought)" if is_ce_surge else "🟢 CE BUY"
+        return f"{'🟢' * ce_circles} CE BUY" if ce_circles > 1 else "🟢 CE BUY"
     elif d_ce_oi > d_pe_oi and d_ce_vo > d_pe_vo:
         return "📉 CE SHORTS"
     elif d_pe_oi > d_ce_oi and d_pe_vo > d_ce_vo:
@@ -117,7 +131,7 @@ def calculate_orderflow_signal(d_ce_oi, d_pe_oi, d_ce_vo, d_pe_vo, ce_vol_thresh
 def show_strike_popup(strike, df_flow, is_atm_anchor):
     title_decorator = f"🎯 Strike {strike} (ATM)" if is_atm_anchor else f"Strike {strike}"
     st.subheader(f"Order Flow Analysis Matrix for {title_decorator}")
-    st.caption("Chronological 3-minute interval snapshots combined with Volume + Open Interest velocity tracking rules.")
+    st.caption("Chronological 3-minute interval snapshots combined with progressive multi-session volume break signals.")
     
     df_st = df_flow[df_flow['strike'] == strike].copy().sort_values('timestamp', ascending=True)
     df_st['d_ce_oi'] = df_st['ce_oi'].diff().fillna(0).astype(int)
@@ -125,18 +139,28 @@ def show_strike_popup(strike, df_flow, is_atm_anchor):
     df_st['d_ce_vo'] = df_st['ce_vol'].diff().fillna(0).astype(int)
     df_st['d_pe_vo'] = df_st['pe_vol'].diff().fillna(0).astype(int)
     
-    # Calculate rolling background boundaries across trailing rows for surge lookups
     signals = []
     df_st_reset = df_st.reset_index(drop=True)
     for idx, row in df_st_reset.iterrows():
-        # Compile preceding 12 data points (representing ~30-45 minutes of historical background context)
-        start_idx = max(0, idx - 12)
-        window = df_st_reset.iloc[start_idx:idx]
+        # Session 1 (Last 10 frames = 30m)
+        s1 = df_st_reset.iloc[max(0, idx - 10):idx]
+        # Session 2 (10 to 20 frames ago = 30-60m window)
+        s2 = df_st_reset.iloc[max(0, idx - 20):max(0, idx - 10)]
+        # Session 3 (20 to 30 frames ago = 60-90m window)
+        s3 = df_st_reset.iloc[max(0, idx - 30):max(0, idx - 20)]
         
-        ce_thresh = window['d_ce_vo'].max() * 2.5 if not window.empty else None
-        pe_thresh = window['d_pe_vo'].max() * 2.5 if not window.empty else None
+        ce_windows = [
+            s1['d_ce_vo'].max() * 2.5 if not s1.empty else float('inf'),
+            s2['d_ce_vo'].max() * 2.5 if not s2.empty else float('inf'),
+            s3['d_ce_vo'].max() * 2.5 if not s3.empty else float('inf')
+        ]
+        pe_windows = [
+            s1['d_pe_vo'].max() * 2.5 if not s1.empty else float('inf'),
+            s2['d_pe_vo'].max() * 2.5 if not s2.empty else float('inf'),
+            s3['d_pe_vo'].max() * 2.5 if not s3.empty else float('inf')
+        ]
         
-        signals.append(calculate_orderflow_signal(row['d_ce_oi'], row['d_pe_oi'], row['d_ce_vo'], row['d_pe_vo'], ce_thresh, pe_thresh))
+        signals.append(calculate_progressive_signal(row['d_ce_oi'], row['d_pe_oi'], row['d_ce_vo'], row['d_pe_vo'], ce_windows, pe_windows))
     
     df_st_reset['🎯 ACTION SIGNAL'] = signals
     df_st_processed = df_st_reset.sort_values('timestamp', ascending=False)
@@ -351,7 +375,7 @@ if app_mode == "📁 Offline DB File Lookback":
     vol_dominance = "PE Dominance" if total_pe_vol > total_ce_vol else "CE Dominance"
     synthetic_straddle_price = float(df_curr.loc[atm_strike, 'ce_ltp'] + df_curr.loc[atm_strike, 'pe_ltp']) if atm_strike in df_curr.index else 0.0
 
-# --- CALCULATE DELTA DATA PANELS WITH HISTORICAL BOUNDARIES ---
+# --- CALCULATE DELTA DATA PANELS WITH PROGRESSIVE SESSION BREAKS ---
 df_delta = pd.DataFrame(index=target_strikes)
 df_delta['Δ CE Vol'] = df_curr['ce_vol'] - df_prev['ce_vol']
 df_delta['Δ CE OI'] = df_curr['ce_oi'] - df_prev['ce_oi']
@@ -370,17 +394,34 @@ for strike_idx in target_strikes:
     d_ce_vo = df_delta.loc[strike_idx, 'Δ CE Vol'] if strike_idx in df_delta.index else 0
     d_pe_vo = df_delta.loc[strike_idx, 'Δ PE Vol'] if strike_idx in df_delta.index else 0
     
-    # Calculate a statistical threshold from the preceding 12 data slices for the live grid lookups
-    df_prior_st = df_flow[(df_flow['strike'] == strike_idx) & (df_flow['timestamp'] < t_current)].copy().sort_values('timestamp', ascending=True)
-    if len(df_prior_st) >= 2:
-        df_prior_st['diff_ce_vo'] = df_prior_st['ce_vol'].diff()
-        df_prior_st['diff_pe_vo'] = df_prior_st['pe_vol'].diff()
-        ce_thresh = df_prior_st['diff_ce_vo'].tail(12).max() * 2.5
-        pe_thresh = df_prior_st['diff_pe_vo'].tail(12).max() * 2.5
-    else:
-        ce_thresh, pe_thresh = None, None
+    # Isolate previous historical timeline chunks excluding the unconfirmed live candle
+    df_prior = df_flow[(df_flow['strike'] == strike_idx) & (df_flow['timestamp'] < t_current)].copy().sort_values('timestamp', ascending=True)
+    
+    if len(df_prior) >= 2:
+        df_prior['diff_ce_vo'] = df_prior['ce_vol'].diff()
+        df_prior['diff_pe_vo'] = df_prior['pe_vol'].diff()
         
-    active_row_signals.append(calculate_orderflow_signal(d_ce_oi, d_pe_oi, d_ce_vo, d_pe_vo, ce_thresh, pe_thresh))
+        # Session 1: Immediate last 30 minutes (Trailing 10 rows)
+        s1_data = df_prior.tail(10)
+        # Session 2: 30 to 60 minutes ago (10 to 20 rows back)
+        s2_data = df_prior.tail(20).head(10) if len(df_prior) >= 20 else pd.DataFrame()
+        # Session 3: 60 to 90 minutes ago (20 to 30 rows back)
+        s3_data = df_prior.tail(30).head(10) if len(df_prior) >= 30 else pd.DataFrame()
+        
+        ce_windows = [
+            s1_data['diff_ce_vo'].max() * 2.5 if not s1_data.empty else float('inf'),
+            s2_data['diff_ce_vo'].max() * 2.5 if not s2_data.empty else float('inf'),
+            s3_data['diff_ce_vo'].max() * 2.5 if not s3_data.empty else float('inf')
+        ]
+        pe_windows = [
+            s1_data['diff_pe_vo'].max() * 2.5 if not s1_data.empty else float('inf'),
+            s2_data['diff_pe_vo'].max() * 2.5 if not s2_data.empty else float('inf'),
+            s3_data['diff_pe_vo'].max() * 2.5 if not s3_data.empty else float('inf')
+        ]
+    else:
+        ce_windows, pe_windows = [float('inf')]*3, [float('inf')]*3
+        
+    active_row_signals.append(calculate_progressive_signal(d_ce_oi, d_pe_oi, d_ce_vo, d_pe_vo, ce_windows, pe_windows))
 
 df_delta['🎯 ACTIVE RADAR SIGNAL'] = active_row_signals
 
