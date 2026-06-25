@@ -20,7 +20,17 @@ warnings.filterwarnings('ignore', category=UserWarning)
 # --- CONFIGURATION & SESSION INITIALIZATION ---
 st.set_page_config(page_title="SENSEX Options Quant Matrix", layout="wide")
 
-# --- SYSTEM VARIABLES ---
+# Run the autorefresh every 3 minutes (180,000 milliseconds)
+st_autorefresh(interval=180000, key="matrix_autorefresh")
+
+st.markdown("""
+    <style>
+        .block-container { padding-top: 2rem; padding-bottom: 2rem; }
+        .stMetric { background-color: rgba(255, 255, 255, 0.05); padding: 15px; border-radius: 8px; border: 1px solid rgba(255, 255, 255, 0.1); }
+        div.stButton > button:first-child { width: 100%; margin-top: 10px; }
+    </style>
+""", unsafe_allow_html=True)
+
 MAX_LOTS_ALLOWED = 4
 LOT_SIZE_SENSEX = 10  
 LAST_ENTRY_TIME = datetime.time(14, 0)
@@ -89,20 +99,46 @@ def get_live_quotes(fyers, symbols_list):
 def color_coding(val):
     color = ''
     if isinstance(val, str):
-        if val.startswith('+') or "🟢" in val or "BUY" in val: color = '#4ade80' 
-        elif val.startswith('-') or "🔴" in val or "SHORTS" in val: color = '#f87171' 
+        if val.startswith('+') or "🟢" in val or "BUY" in val or "🔥" in val: color = '#4ade80' 
+        elif val.startswith('-') or "🔴" in val or "SHORTS" in val or "🚨" in val: color = '#f87171' 
     return f'color: {color}' if color else ''
 
-# --- MULTI-SESSION PROGRESSIVE MOMENTUM SIGNAL INTERPRETER ---
-def calculate_progressive_signal(d_ce_oi, d_pe_oi, d_ce_vo, d_pe_vo, ce_windows=None, pe_windows=None):
-    if d_ce_oi == 0 and d_pe_oi == 0 and d_ce_vo == 0 and d_pe_vo == 0:
-        return "⚖️ NO FLOW"
-    
+# --- INSTANT TELEGRAM NOTIFICATION DISPATCHER ---
+def send_instant_telegram_alert(strike, opt_type, delta_vol, current_ltp, is_all_time_high=False):
+    try:
+        token = st.secrets.get("TELEGRAM_BOT_TOKEN")
+        chat_id = st.secrets.get("TELEGRAM_CHAT_ID")
+        if not token or not chat_id:
+            return
+            
+        emoji = "⚠️🟢" if opt_type == "CE" else "⚠️🔴"
+        title = "🚀 SENSEX RECORD DAILY VOLUME BREAKOUT 🚀" if is_all_time_high else "⚡ SENSEX INSTITUTIONAL VOLUME SPIKE ⚡"
+        
+        message = (
+            f"**{title}**\n\n"
+            f"🎯 **Strike:** SENSEX {strike} {opt_type}\n"
+            f"📈 **Volume Surge (3m):** {delta_vol:,}\n"
+            f"💰 **Current LTP:** ₹{current_ltp:.2f}\n"
+            f"⏰ **Time:** {get_ist_now().strftime('%H:%M:%S')} IST\n\n"
+            f"🔥 *Warning: This volume crosses the maximum volume ceiling recorded today since 9:15 AM!*" if is_all_time_high else f"⚠️ *High momentum block activity detected.*"
+        )
+        url = f"https://api.telegram.org/bot{token}/sendMessage"
+        requests.post(url, json={"chat_id": chat_id, "text": message, "parse_mode": "Markdown"})
+    except Exception:
+        pass
+
+# --- PROGRESSIVE MOMENTUM SIGNAL INTERPRETER WITH DAILY RUNNING MAX CEILING FILTERS ---
+def calculate_progressive_signal(d_ce_oi, d_pe_oi, d_ce_vo, d_pe_vo, ce_windows=None, pe_windows=None, day_max_ce=0, day_max_pe=0, strike_context=None, ltp_context=None, live_dispatch=False):
     if ce_windows is None: ce_windows = [float('inf'), float('inf'), float('inf')]
     if pe_windows is None: pe_windows = [float('inf'), float('inf'), float('inf')]
     
+    # Check for daily peak breaks (ignoring current index values to identify clear breakout points)
+    is_pe_day_high = d_pe_vo > day_max_pe and d_pe_vo > 100000
+    is_ce_day_high = d_ce_vo > day_max_ce and d_ce_vo > 100000
+    
+    # Calculate progressive indicators against rolling windows
     ce_circles = 1
-    if d_ce_vo > 20000:  # Scaled minimum execution volume baseline for Sensex contracts
+    if d_ce_vo > 20000:
         if d_ce_vo > ce_windows[0]: ce_circles = 2
         if d_ce_vo > ce_windows[0] and d_ce_vo > ce_windows[1]: ce_circles = 3
         if d_ce_vo > ce_windows[0] and d_ce_vo > ce_windows[1] and d_ce_vo > ce_windows[2]: ce_circles = 4
@@ -113,14 +149,45 @@ def calculate_progressive_signal(d_ce_oi, d_pe_oi, d_ce_vo, d_pe_vo, ce_windows=
         if d_pe_vo > pe_windows[0] and d_pe_vo > pe_windows[1]: pe_circles = 3
         if d_pe_vo > pe_windows[0] and d_pe_vo > pe_windows[1] and d_pe_vo > pe_windows[2]: pe_circles = 4
 
+    # INTERCEPT 1: CRITICAL PE BREAKOUT HIGHS
+    if is_pe_day_high and d_pe_vo > d_ce_vo:
+        if live_dispatch and strike_context and ltp_context:
+            send_instant_telegram_alert(strike_context, "PE", d_pe_vo, ltp_context[1], is_all_time_high=True)
+        return "🔴🔴🔴🔴 🚨 SENSEX PE BREAKOUT HIGH"
+
+    # INTERCEPT 2: CRITICAL CE BREAKOUT HIGHS
+    if is_ce_day_high and d_ce_vo > d_pe_vo:
+        if live_dispatch and strike_context and ltp_context:
+            send_instant_telegram_alert(strike_context, "CE", d_ce_vo, ltp_context[0], is_all_time_high=True)
+        return "🟢🟢🟢🟢 🔥 SENSEX CE BREAKOUT HIGH"
+
+    # Standard Rolling Group Overrides
+    if pe_circles >= 3 and abs(d_pe_oi) <= 50000 and d_pe_vo > d_ce_vo:
+        if live_dispatch and strike_context and ltp_context:
+            send_instant_telegram_alert(strike_context, "PE", d_pe_vo, ltp_context[1], is_all_time_high=False)
+        return f"{'🔴' * pe_circles} 🚨 PE VOLUME SHOCK"
+        
+    if ce_circles >= 3 and abs(d_ce_oi) <= 50000 and d_ce_vo > d_pe_vo:
+        if live_dispatch and strike_context and ltp_context:
+            send_instant_telegram_alert(strike_context, "CE", d_ce_vo, ltp_context[0], is_all_time_high=False)
+        return f"{'🟢' * ce_circles} 🔥 CE VOLUME SHOCK"
+
+    # Directional Set Layouts
     if d_ce_oi > d_pe_oi and d_pe_vo > d_ce_vo:
+        if live_dispatch and pe_circles >= 3 and strike_context and ltp_context:
+            send_instant_telegram_alert(strike_context, "PE", d_pe_vo, ltp_context[1], is_all_time_high=False)
         return f"{'🔴' * pe_circles} PE BUY" if pe_circles > 1 else "🔴 PE BUY"
     elif d_pe_oi > d_ce_oi and d_ce_vo > d_pe_vo:
+        if live_dispatch and ce_circles >= 3 and strike_context and ltp_context:
+            send_instant_telegram_alert(strike_context, "CE", d_ce_vo, ltp_context[0], is_all_time_high=False)
         return f"{'🟢' * ce_circles} CE BUY" if ce_circles > 1 else "🟢 CE BUY"
     elif d_ce_oi > d_pe_oi and d_ce_vo > d_pe_vo:
         return "📉 CE SHORTS"
     elif d_pe_oi > d_ce_oi and d_pe_vo > d_ce_vo:
         return "📈 PE SHORTS"
+        
+    if d_ce_oi == 0 and d_pe_oi == 0 and d_ce_vo == 0 and d_pe_vo == 0:
+        return "⚖️ NO FLOW"
     return "⚖️ NEUTRAL"
 
 # --- POP-UP MODAL TIMELINE ENGINE ---
@@ -143,6 +210,11 @@ def show_strike_popup(strike, df_flow, is_atm_anchor):
         s2 = df_st_reset.iloc[max(0, idx - 20):max(0, idx - 10)]
         s3 = df_st_reset.iloc[max(0, idx - 30):max(0, idx - 20)]
         
+        # Pull the historical intraday maximum seen up to this point in time
+        historical_day_so_far = df_st_reset.iloc[0:idx]
+        day_max_ce = historical_day_so_far['d_ce_vo'].max() if not historical_day_so_far.empty else 0
+        day_max_pe = historical_day_so_far['d_pe_vo'].max() if not historical_day_so_far.empty else 0
+        
         ce_windows = [
             s1['d_ce_vo'].max() * 2.5 if not s1.empty else float('inf'),
             s2['d_ce_vo'].max() * 2.5 if not s2.empty else float('inf'),
@@ -154,7 +226,7 @@ def show_strike_popup(strike, df_flow, is_atm_anchor):
             s3['d_pe_vo'].max() * 2.5 if not s3.empty else float('inf')
         ]
         
-        signals.append(calculate_progressive_signal(row['d_ce_oi'], row['d_pe_oi'], row['d_ce_vo'], row['d_pe_vo'], ce_windows, pe_windows))
+        signals.append(calculate_progressive_signal(row['d_ce_oi'], row['d_pe_oi'], row['d_ce_vo'], row['d_pe_vo'], ce_windows, pe_windows, day_max_ce, day_max_pe, strike, [row['ce_ltp'], row['pe_ltp']], live_dispatch=False))
     
     df_st_reset['🎯 ACTION SIGNAL'] = signals
     df_st_processed = df_st_reset.sort_values('timestamp', ascending=False)
@@ -213,8 +285,6 @@ offline_data_ready = False
 df_history, df_flow = pd.DataFrame(), pd.DataFrame()
 
 if app_mode == "🔴 Live Exchange Node":
-    st_autorefresh(interval=180000, key="matrix_autorefresh")
-    
     with st.sidebar:
         st.header("Gateway Security Credentials")
         input_fy_id = st.text_input("Fyers ID", value="FAJ88605")
@@ -251,7 +321,7 @@ if app_mode == "🔴 Live Exchange Node":
     sensex_spot = float(spot_raw["BSE:SENSEX-INDEX"]["lp"])
     open_price = float(spot_raw["BSE:SENSEX-INDEX"]["open_price"])
     prev_close = float(spot_raw["BSE:SENSEX-INDEX"]["prev_close_price"])
-    atm_strike = round(sensex_spot / 100) * 100  # 100 Point Intervals for SENSEX Chain
+    atm_strike = round(sensex_spot / 100) * 100  
 
     vix_data = spot_raw.get("NSE:INDIAVIX-INDEX", {})
     vix_lp, vix_prev = float(vix_data.get("lp", 15.0)), float(vix_data.get("prev_close_price", 15.0))
@@ -388,11 +458,16 @@ for strike_idx in target_strikes:
     d_ce_vo = df_delta.loc[strike_idx, 'Δ CE Vol'] if strike_idx in df_delta.index else 0
     d_pe_vo = df_delta.loc[strike_idx, 'Δ PE Vol'] if strike_idx in df_delta.index else 0
     
+    # Isolate all daily entries prior to the latest incoming tick
     df_prior = df_flow[(df_flow['strike'] == strike_idx) & (df_flow['timestamp'] < t_current)].copy().sort_values('timestamp', ascending=True)
     
     if len(df_prior) >= 2:
         df_prior['diff_ce_vo'] = df_prior['ce_vol'].diff()
         df_prior['diff_pe_vo'] = df_prior['pe_vol'].diff()
+        
+        # Capture the static running day peak before the current tick
+        day_max_ce = df_prior['diff_ce_vo'].max() if not df_prior['diff_ce_vo'].empty else 0
+        day_max_pe = df_prior['diff_pe_vo'].max() if not df_prior['diff_pe_vo'].empty else 0
         
         s1_data = df_prior.tail(10)
         s2_data = df_prior.tail(20).head(10) if len(df_prior) >= 20 else pd.DataFrame()
@@ -410,8 +485,13 @@ for strike_idx in target_strikes:
         ]
     else:
         ce_windows, pe_windows = [float('inf')]*3, [float('inf')]*3
-        
-    active_row_signals.append(calculate_progressive_signal(d_ce_oi, d_pe_oi, d_ce_vo, d_pe_vo, ce_windows, pe_windows))
+        day_max_ce, day_max_pe = 0, 0
+    
+    curr_ce_ltp = df_curr.loc[strike_idx, 'ce_ltp'] if strike_idx in df_curr.index else 0.0
+    curr_pe_ltp = df_curr.loc[strike_idx, 'pe_ltp'] if strike_idx in df_curr.index else 0.0
+    
+    is_live_loop = (app_mode == "🔴 Live Exchange Node")
+    active_row_signals.append(calculate_progressive_signal(d_ce_oi, d_pe_oi, d_ce_vo, d_pe_vo, ce_windows, pe_windows, day_max_ce, day_max_pe, strike_idx, [curr_ce_ltp, curr_pe_ltp], live_dispatch=is_live_loop))
 
 df_delta['🎯 ACTIVE RADAR SIGNAL'] = active_row_signals
 
