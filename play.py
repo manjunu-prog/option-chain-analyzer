@@ -111,16 +111,15 @@ def send_instant_telegram_alert(strike, opt_type, delta_vol, current_ltp, is_all
         if not token or not chat_id:
             return
             
-        emoji = "⚠️🟢" if opt_type == "CE" else "⚠️🔴"
         title = "🚀 SENSEX RECORD DAILY VOLUME BREAKOUT 🚀" if is_all_time_high else "⚡ SENSEX INSTITUTIONAL VOLUME SPIKE ⚡"
         
         message = (
             f"**{title}**\n\n"
             f"🎯 **Strike:** SENSEX {strike} {opt_type}\n"
-            f"📈 **Volume Surge (3m):** {delta_vol:,}\n"
+            f"📈 **Volume Surge (3m):** {delta_vol:,} Contracts\n"
             f"💰 **Current LTP:** ₹{current_ltp:.2f}\n"
             f"⏰ **Time:** {get_ist_now().strftime('%H:%M:%S')} IST\n\n"
-            f"🔥 *Warning: This volume crosses the maximum volume ceiling recorded today since 9:15 AM!*" if is_all_time_high else f"⚠️ *High momentum block activity detected.*"
+            f"🔥 *Warning: High momentum institutional blockbuster activity detected!*"
         )
         url = f"https://api.telegram.org/bot{token}/sendMessage"
         requests.post(url, json={"chat_id": chat_id, "text": message, "parse_mode": "Markdown"})
@@ -128,27 +127,26 @@ def send_instant_telegram_alert(strike, opt_type, delta_vol, current_ltp, is_all
         pass
 
 # --- STRICT INSTITUTIONAL MACRO BREAKOUT INTERPRETER ---
-def calculate_progressive_signal(d_ce_oi, d_pe_oi, d_ce_vo, d_pe_vo, ce_windows=None, pe_windows=None, day_max_ce=0, day_max_pe=0, strike_context=None, ltp_context=None, live_dispatch=False):
+def calculate_progressive_signal(d_ce_oi, d_pe_oi, d_ce_vo, d_pe_vo, strike_context=None, ltp_context=None, live_dispatch=False):
     
-    # Calculate CE Circle Stack based on absolute institutional block size thresholds
+    # Process circle stacks based on pure, filtered option contract bars matching your charts
     ce_circles = 0
-    if d_ce_vo >= 35000000:   # 35M+ Critical Breakdown Peak
+    if d_ce_vo >= 3500000:   # 3.5M+ Contracts Critical Peak (Your yellow highlighted breakout lines)
         ce_circles = 4
-    elif d_ce_vo >= 20000000: # 20M+ High Institutional Target
+    elif d_ce_vo >= 1500000: # 1.5M+ Contracts High Target
         ce_circles = 3
-    elif d_ce_vo >= 10000000: # 10M+ Baseline Block Surge
+    elif d_ce_vo >= 500000:  # 500k+ Contracts Baseline Surge
         ce_circles = 2
 
-    # Calculate PE Circle Stack based on absolute institutional block size thresholds
     pe_circles = 0
-    if d_pe_vo >= 35000000:   # 35M+ Critical Breakdown Peak
+    if d_pe_vo >= 3500000:   # 3.5M+ Contracts Critical Peak (Your yellow highlighted breakout lines)
         pe_circles = 4
-    elif d_pe_vo >= 20000000: # 20M+ High Institutional Target
+    elif d_pe_vo >= 1500000: # 1.5M+ Contracts High Target
         pe_circles = 3
-    elif d_pe_vo >= 10000000: # 10M+ Baseline Block Surge
+    elif d_pe_vo >= 500000:  # 500k+ Contracts Baseline Surge
         pe_circles = 2
 
-    # Handle Active Telegram Alerts and UI Overrides for 35M+ Breakout Anomalies
+    # Handle Active Telegram Alerts and UI Overrides for 3.5M+ Breakout Anomalies
     if pe_circles == 4 and d_pe_vo > d_ce_vo:
         if live_dispatch and strike_context and ltp_context:
             send_instant_telegram_alert(strike_context, "PE", d_pe_vo, ltp_context[1], is_all_time_high=True)
@@ -159,7 +157,7 @@ def calculate_progressive_signal(d_ce_oi, d_pe_oi, d_ce_vo, d_pe_vo, ce_windows=
             send_instant_telegram_alert(strike_context, "CE", d_ce_vo, ltp_context[0], is_all_time_high=True)
         return "🟢🟢🟢🟢 🔥 SENSEX CE BREAKOUT HIGH"
 
-    # Standard directional logging (No circles for normal background noise)
+    # Standard directional logging (No circles for normal baseline noise under 500k contracts)
     if d_ce_oi > d_pe_oi and d_pe_vo > d_ce_vo:
         if live_dispatch and pe_circles >= 3 and strike_context and ltp_context:
             send_instant_telegram_alert(strike_context, "PE", d_pe_vo, ltp_context[1], is_all_time_high=False)
@@ -184,38 +182,20 @@ def calculate_progressive_signal(d_ce_oi, d_pe_oi, d_ce_vo, d_pe_vo, ce_windows=
 def show_strike_popup(strike, df_flow, is_atm_anchor):
     title_decorator = f"🎯 Strike {strike} (ATM)" if is_atm_anchor else f"Strike {strike}"
     st.subheader(f"Order Flow Analysis Matrix for {title_decorator}")
-    st.caption("Chronological 3-minute interval snapshots combined with progressive multi-session volume break signals.")
+    st.caption("Chronological 3-minute interval snapshots showing true cleaned institutional velocity surges.")
     
     df_st = df_flow[df_flow['strike'] == strike].copy().sort_values('timestamp', ascending=True)
     df_st['d_ce_oi'] = df_st['ce_oi'].diff().fillna(0).astype(int)
     df_st['d_pe_oi'] = df_st['pe_oi'].diff().fillna(0).astype(int)
-    df_st['d_ce_vo'] = df_st['ce_vol'].diff().fillna(0).astype(int)
-    df_st['d_pe_vo'] = df_st['pe_vol'].diff().fillna(0).astype(int)
+    
+    # FIX: Isolate interval volume correctly by scaling the metrics down to contract bars
+    df_st['d_ce_vo'] = (df_st['ce_vol'].diff().fillna(0) / 100).astype(int)
+    df_st['d_pe_vo'] = (df_st['pe_vol'].diff().fillna(0) / 100).astype(int)
     
     signals = []
     df_st_reset = df_st.reset_index(drop=True)
     for idx, row in df_st_reset.iterrows():
-        s1 = df_st_reset.iloc[max(0, idx - 10):idx]
-        s2 = df_st_reset.iloc[max(0, idx - 20):max(0, idx - 10)]
-        s3 = df_st_reset.iloc[max(0, idx - 30):max(0, idx - 20)]
-        
-        # Pull the historical intraday maximum seen up to this point in time
-        historical_day_so_far = df_st_reset.iloc[0:idx]
-        day_max_ce = historical_day_so_far['d_ce_vo'].max() if not historical_day_so_far.empty else 0
-        day_max_pe = historical_day_so_far['d_pe_vo'].max() if not historical_day_so_far.empty else 0
-        
-        ce_windows = [
-            s1['d_ce_vo'].max() * 2.5 if not s1.empty else float('inf'),
-            s2['d_ce_vo'].max() * 2.5 if not s2.empty else float('inf'),
-            s3['d_ce_vo'].max() * 2.5 if not s3.empty else float('inf')
-        ]
-        pe_windows = [
-            s1['d_pe_vo'].max() * 2.5 if not s1.empty else float('inf'),
-            s2['d_pe_vo'].max() * 2.5 if not s2.empty else float('inf'),
-            s3['d_pe_vo'].max() * 2.5 if not s3.empty else float('inf')
-        ]
-        
-        signals.append(calculate_progressive_signal(row['d_ce_oi'], row['d_pe_oi'], row['d_ce_vo'], row['d_pe_vo'], ce_windows, pe_windows, day_max_ce, day_max_pe, strike, [row['ce_ltp'], row['pe_ltp']], live_dispatch=False))
+        signals.append(calculate_progressive_signal(row['d_ce_oi'], row['d_pe_oi'], row['d_ce_vo'], row['d_pe_vo'], strike, [row['ce_ltp'], row['pe_ltp']], live_dispatch=False))
     
     df_st_reset['🎯 ACTION SIGNAL'] = signals
     df_st_processed = df_st_reset.sort_values('timestamp', ascending=False)
@@ -293,7 +273,7 @@ if app_mode == "🔴 Live Exchange Node":
                 else: st.session_state.authenticated = False
 
     if not st.session_state.authenticated or st.session_state.fyers_instance is None:
-        st.info("⚡ System status: Awaiting secure initialization parameters via sidebar.")
+        st.sidebar.info("⚡ System status: Awaiting secure initialization parameters.")
         st.stop()
 
     fyers = st.session_state.fyers_instance
@@ -426,17 +406,16 @@ if app_mode == "📁 Offline DB File Lookback":
     total_ce_vol = df_curr['ce_vol'].sum()
     total_pe_vol = df_curr['pe_vol'].sum()
     vol_dominance = "PE Dominance" if total_pe_vol > total_ce_vol else "CE Dominance"
-    synthetic_straddle_price = float(df_curr.loc[atm_strike, 'ce_ltp'] + df_curr.loc[atm_strike, 'pe_ltp']) if atm_strike in df_curr.index else 0.0
 
-# --- CALCULATE DELTA DATA PANELS WITH PROGRESSIVE SESSION BREAKS ---
+# --- CALCULATE REALISTIC INTERVAL CONTRACT COUNT VALUES ---
 df_delta = pd.DataFrame(index=target_strikes)
-df_delta['Δ CE Vol'] = df_curr['ce_vol'] - df_prev['ce_vol']
+df_delta['Δ CE Vol'] = ((df_curr['ce_vol'] - df_prev['ce_vol']).fillna(0) / 100).astype(int)
 df_delta['Δ CE OI'] = df_curr['ce_oi'] - df_prev['ce_oi']
 df_delta['Δ CE LTP'] = (df_curr['ce_ltp'] - df_prev['ce_ltp']).round(2)
 df_delta['Strike (ATM: ' + str(atm_strike) + ')'] = df_delta.index
 df_delta['Δ PE LTP'] = (df_curr['pe_ltp'] - df_prev['pe_ltp']).round(2)
 df_delta['Δ PE OI'] = df_curr['pe_oi'] - df_prev['pe_oi']
-df_delta['Δ PE Vol'] = df_curr['pe_vol'] - df_prev['pe_vol']
+df_delta['Δ PE Vol'] = ((df_curr['pe_vol'] - df_prev['pe_vol']).fillna(0) / 100).astype(int)
 
 numeric_delta = df_delta.copy()
 
@@ -447,40 +426,11 @@ for strike_idx in target_strikes:
     d_ce_vo = df_delta.loc[strike_idx, 'Δ CE Vol'] if strike_idx in df_delta.index else 0
     d_pe_vo = df_delta.loc[strike_idx, 'Δ PE Vol'] if strike_idx in df_delta.index else 0
     
-    # Isolate all daily entries prior to the latest incoming tick
-    df_prior = df_flow[(df_flow['strike'] == strike_idx) & (df_flow['timestamp'] < t_current)].copy().sort_values('timestamp', ascending=True)
-    
-    if len(df_prior) >= 2:
-        df_prior['diff_ce_vo'] = df_prior['ce_vol'].diff()
-        df_prior['diff_pe_vo'] = df_prior['pe_vol'].diff()
-        
-        # Capture the static running day peak before the current tick
-        day_max_ce = df_prior['diff_ce_vo'].max() if not df_prior['diff_ce_vo'].empty else 0
-        day_max_pe = df_prior['diff_pe_vo'].max() if not df_prior['diff_pe_vo'].empty else 0
-        
-        s1_data = df_prior.tail(10)
-        s2_data = df_prior.tail(20).head(10) if len(df_prior) >= 20 else pd.DataFrame()
-        s3_data = df_prior.tail(30).head(10) if len(df_prior) >= 30 else pd.DataFrame()
-        
-        ce_windows = [
-            s1_data['diff_ce_vo'].max() * 2.5 if not s1_data.empty else float('inf'),
-            s2_data['diff_ce_vo'].max() * 2.5 if not s2_data.empty else float('inf'),
-            s3_data['diff_ce_vo'].max() * 2.5 if not s3_data.empty else float('inf')
-        ]
-        pe_windows = [
-            s1_data['diff_pe_vo'].max() * 2.5 if not s1_data.empty else float('inf'),
-            s2_data['diff_pe_vo'].max() * 2.5 if not s2_data.empty else float('inf'),
-            s3_data['diff_pe_vo'].max() * 2.5 if not s3_data.empty else float('inf')
-        ]
-    else:
-        ce_windows, pe_windows = [float('inf')]*3, [float('inf')]*3
-        day_max_ce, day_max_pe = 0, 0
-    
     curr_ce_ltp = df_curr.loc[strike_idx, 'ce_ltp'] if strike_idx in df_curr.index else 0.0
     curr_pe_ltp = df_curr.loc[strike_idx, 'pe_ltp'] if strike_idx in df_curr.index else 0.0
     
     is_live_loop = (app_mode == "🔴 Live Exchange Node")
-    active_row_signals.append(calculate_progressive_signal(d_ce_oi, d_pe_oi, d_ce_vo, d_pe_vo, ce_windows, pe_windows, day_max_ce, day_max_pe, strike_idx, [curr_ce_ltp, curr_pe_ltp], live_dispatch=is_live_loop))
+    active_row_signals.append(calculate_progressive_signal(d_ce_oi, d_pe_oi, d_ce_vo, d_pe_vo, strike_idx, [curr_ce_ltp, curr_pe_ltp], live_dispatch=is_live_loop))
 
 df_delta['🎯 ACTIVE RADAR SIGNAL'] = active_row_signals
 
