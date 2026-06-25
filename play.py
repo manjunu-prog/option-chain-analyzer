@@ -127,16 +127,21 @@ def send_instant_telegram_alert(strike, opt_type, delta_vol, current_ltp, is_all
     except Exception:
         pass
 
-# --- PROGRESSIVE MOMENTUM SIGNAL INTERPRETER WITH DAILY RUNNING MAX CEILING FILTERS ---
+# --- PROGRESSIVE MOMENTUM SIGNAL INTERPRETER WITH ABSOLUTE EXTRACTION ALERTS ---
 def calculate_progressive_signal(d_ce_oi, d_pe_oi, d_ce_vo, d_pe_vo, ce_windows=None, pe_windows=None, day_max_ce=0, day_max_pe=0, strike_context=None, ltp_context=None, live_dispatch=False):
     if ce_windows is None: ce_windows = [float('inf'), float('inf'), float('inf')]
     if pe_windows is None: pe_windows = [float('inf'), float('inf'), float('inf')]
     
-    # Check for daily peak breaks (ignoring current index values to identify clear breakout points)
+    # 1. FIXED INSTITUTIONAL THRESHOLD SHOCKS (SENSEX SPECIFIC)
+    # If volume crosses 1.5 Million instantly, it's an absolute institutional footprint
+    is_pe_absolute_shock = (d_pe_vo >= 1500000)
+    is_ce_absolute_shock = (d_ce_vo >= 1500000)
+    
+    # 2. RUNNING DAY-HIGH CEILING BREAKOUTS
     is_pe_day_high = d_pe_vo > day_max_pe and d_pe_vo > 100000
     is_ce_day_high = d_ce_vo > day_max_ce and d_ce_vo > 100000
     
-    # Calculate progressive indicators against rolling windows
+    # 3. ROLLING MULTI-SESSION PROGRESSIVE CIRCLING
     ce_circles = 1
     if d_ce_vo > 20000:
         if d_ce_vo > ce_windows[0]: ce_circles = 2
@@ -149,19 +154,19 @@ def calculate_progressive_signal(d_ce_oi, d_pe_oi, d_ce_vo, d_pe_vo, ce_windows=
         if d_pe_vo > pe_windows[0] and d_pe_vo > pe_windows[1]: pe_circles = 3
         if d_pe_vo > pe_windows[0] and d_pe_vo > pe_windows[1] and d_pe_vo > pe_windows[2]: pe_circles = 4
 
-    # INTERCEPT 1: CRITICAL PE BREAKOUT HIGHS
-    if is_pe_day_high and d_pe_vo > d_ce_vo:
+    # CRITICAL TRIGGER INTERCEPT: PE BREAKOUT & ABSOLUTE SHOCK OVERRIDES
+    if (is_pe_day_high or is_pe_absolute_shock) and d_pe_vo > d_ce_vo:
         if live_dispatch and strike_context and ltp_context:
             send_instant_telegram_alert(strike_context, "PE", d_pe_vo, ltp_context[1], is_all_time_high=True)
         return "🔴🔴🔴🔴 🚨 SENSEX PE BREAKOUT HIGH"
 
-    # INTERCEPT 2: CRITICAL CE BREAKOUT HIGHS
-    if is_ce_day_high and d_ce_vo > d_pe_vo:
+    # CRITICAL TRIGGER INTERCEPT: CE BREAKOUT & ABSOLUTE SHOCK OVERRIDES
+    if (is_ce_day_high or is_ce_absolute_shock) and d_ce_vo > d_pe_vo:
         if live_dispatch and strike_context and ltp_context:
             send_instant_telegram_alert(strike_context, "CE", d_ce_vo, ltp_context[0], is_all_time_high=True)
         return "🟢🟢🟢🟢 🔥 SENSEX CE BREAKOUT HIGH"
 
-    # Standard Rolling Group Overrides
+    # Trailing Standard Short-Squeeze Signals
     if pe_circles >= 3 and abs(d_pe_oi) <= 50000 and d_pe_vo > d_ce_vo:
         if live_dispatch and strike_context and ltp_context:
             send_instant_telegram_alert(strike_context, "PE", d_pe_vo, ltp_context[1], is_all_time_high=False)
@@ -172,14 +177,9 @@ def calculate_progressive_signal(d_ce_oi, d_pe_oi, d_ce_vo, d_pe_vo, ce_windows=
             send_instant_telegram_alert(strike_context, "CE", d_ce_vo, ltp_context[0], is_all_time_high=False)
         return f"{'🟢' * ce_circles} 🔥 CE VOLUME SHOCK"
 
-    # Directional Set Layouts
     if d_ce_oi > d_pe_oi and d_pe_vo > d_ce_vo:
-        if live_dispatch and pe_circles >= 3 and strike_context and ltp_context:
-            send_instant_telegram_alert(strike_context, "PE", d_pe_vo, ltp_context[1], is_all_time_high=False)
         return f"{'🔴' * pe_circles} PE BUY" if pe_circles > 1 else "🔴 PE BUY"
     elif d_pe_oi > d_ce_oi and d_ce_vo > d_pe_vo:
-        if live_dispatch and ce_circles >= 3 and strike_context and ltp_context:
-            send_instant_telegram_alert(strike_context, "CE", d_ce_vo, ltp_context[0], is_all_time_high=False)
         return f"{'🟢' * ce_circles} CE BUY" if ce_circles > 1 else "🟢 CE BUY"
     elif d_ce_oi > d_pe_oi and d_ce_vo > d_pe_vo:
         return "📉 CE SHORTS"
