@@ -290,8 +290,8 @@ if app_mode == "🔴 Live Exchange Node":
         oi_val = int(contract.get("oi", 0))
         vol_val = int(contract.get("volume", 0))
         ltp_val = float(contract.get("ltp", 0.0))
-        oich_val = float(contract.get("oich", 0.0))
-        oichp_val = float(contract.get("oichp", 0.0))
+        oich_val = float(contract.get("chng_oi") or contract.get("oich") or contract.get("oi_change") or 0.0)
+        oichp_val = float(contract.get("net_chng_oi_pct") or contract.get("oichp") or contract.get("oi_change_pct") or 0.0)
         
         strike_oi_totals[strike] = strike_oi_totals.get(strike, 0) + oi_val
         
