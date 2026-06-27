@@ -87,7 +87,6 @@ def get_live_quotes(fyers, symbols_list):
         return {}
 
 def get_last_closing_spot(fyers, symbol="NSE:NIFTY50-INDEX"):
-    """Fetches the last daily close price if live quotes fail (e.g., weekends)."""
     try:
         end_date = datetime.date.today()
         start_date = end_date - datetime.timedelta(days=5)
@@ -175,7 +174,6 @@ def show_strike_popup(strike, df_flow, is_atm_anchor):
     )
     st.dataframe(styled_popup, use_container_width=True, hide_index=True)
 
-# --- BACKUP DUMP TO TELEGRAM CHANNELS ---
 def backup_and_send_telegram(supabase_conn):
     try:
         st.info("🔄 Compiling database records into local SQLite binary snapshot...")
@@ -220,7 +218,6 @@ if app_mode == "🔴 Live Exchange Node":
     with st.sidebar:
         st.header("Gateway Security Credentials")
         
-        # ALL CREDENTIALS RESTORED EXACTLY AS REQUESTED
         input_fy_id = st.text_input("Fyers ID", value="FAJ88605")
         input_pin = st.text_input("Security PIN", value="4089", type="password")
         input_totp = st.text_input("TOTP Seed Key", value="ZHOQNKKVMI7IRCAPUFX7OXRMPFXRYVU6", type="password")
@@ -252,7 +249,6 @@ if app_mode == "🔴 Live Exchange Node":
     batch_2 = REMAINING_25_SYMBOLS
     spot_raw = {**get_live_quotes(fyers, batch_1), **get_live_quotes(fyers, batch_2)}
 
-    # Apply manual spot, fallback to history if market closed, else use live data
     if manual_spot > 0:
         nifty_spot = manual_spot
         open_price, prev_close = nifty_spot, nifty_spot 
@@ -289,18 +285,32 @@ if app_mode == "🔴 Live Exchange Node":
 
     for contract in options_list:
         opt_type, strike = contract.get("option_type"), contract.get("strike_price")
-        oi_val, vol_val, ltp_val = int(contract.get("oi", 0)), int(contract.get("volume", 0)), float(contract.get("ltp", 0.0))
+        
+        # EXTRACTING CRITICAL API FIELDS (DAILY CHANGES)
+        oi_val = int(contract.get("oi", 0))
+        vol_val = int(contract.get("volume", 0))
+        ltp_val = float(contract.get("ltp", 0.0))
+        oich_val = float(contract.get("oich", 0.0))
+        oichp_val = float(contract.get("oichp", 0.0))
+        
         strike_oi_totals[strike] = strike_oi_totals.get(strike, 0) + oi_val
         
         match = next((d for d in current_strike_data if d['strike'] == strike), None)
         if not match:
-            match = {"strike": strike, "ce_oi": 0, "ce_vol": 0, "ce_ltp": 0.0, "pe_oi": 0, "pe_vol": 0, "pe_ltp": 0.0}
+            match = {
+                "strike": strike, 
+                "ce_oi": 0, "ce_vol": 0, "ce_ltp": 0.0, "ce_oich": 0.0, "ce_oichp": 0.0,
+                "pe_oi": 0, "pe_vol": 0, "pe_ltp": 0.0, "pe_oich": 0.0, "pe_oichp": 0.0
+            }
             current_strike_data.append(match)
+            
         if opt_type == "CE":
             match['ce_oi'], match['ce_vol'], match['ce_ltp'] = oi_val, vol_val, ltp_val
+            match['ce_oich'], match['ce_oichp'] = oich_val, oichp_val
             total_ce_oi += oi_val; total_ce_vol += vol_val
         else:
             match['pe_oi'], match['pe_vol'], match['pe_ltp'] = oi_val, vol_val, ltp_val
+            match['pe_oich'], match['pe_oichp'] = oich_val, oichp_val
             total_pe_oi += oi_val; total_pe_vol += vol_val
 
     atm_call_contract = next((c for c in options_list if c.get("option_type") == "CE" and c.get("strike_price") == atm_strike), {"oi": 0, "ltp": 0})
@@ -309,7 +319,20 @@ if app_mode == "🔴 Live Exchange Node":
     try:
         conn = psycopg2.connect(st.secrets["SUPABASE_URI"]); conn.autocommit = True; c = conn.cursor()
         c.execute("CREATE TABLE IF NOT EXISTS flow_history (timestamp TIMESTAMP, total_ce_oi BIGINT, total_pe_oi BIGINT, atm_ce_oi BIGINT, atm_pe_oi BIGINT)")
-        c.execute("CREATE TABLE IF NOT EXISTS strike_flow (timestamp TIMESTAMP, strike INTEGER, ce_oi BIGINT, ce_vol BIGINT, ce_ltp REAL, pe_oi BIGINT, pe_vol BIGINT, pe_ltp REAL)")
+        
+        # UPGRADED SCHEMA: Now stores daily OI changes persistently
+        c.execute("""CREATE TABLE IF NOT EXISTS strike_flow (
+            timestamp TIMESTAMP, strike INTEGER, 
+            ce_oi BIGINT, ce_vol BIGINT, ce_ltp REAL, 
+            pe_oi BIGINT, pe_vol BIGINT, pe_ltp REAL,
+            ce_oich REAL DEFAULT 0, ce_oichp REAL DEFAULT 0,
+            pe_oich REAL DEFAULT 0, pe_oichp REAL DEFAULT 0
+        )""")
+        
+        # SAFE EVOLUTION: Add columns if table existed prior to this update
+        for col in ['ce_oich', 'ce_oichp', 'pe_oich', 'pe_oichp']:
+            try: c.execute(f"ALTER TABLE strike_flow ADD COLUMN {col} REAL DEFAULT 0")
+            except Exception: pass
         
         c.execute("SELECT timestamp FROM flow_history ORDER BY timestamp DESC LIMIT 1")
         last_entry = c.fetchone()
@@ -320,7 +343,10 @@ if app_mode == "🔴 Live Exchange Node":
         c.execute("INSERT INTO flow_history VALUES (%s, %s, %s, %s, %s)", (current_time, total_ce_oi, total_pe_oi, int(atm_call_contract.get("oi",0)), int(matched_put_contract.get("oi",0))))
         for r in current_strike_data:
             if r['strike'] in target_strikes:
-                c.execute("INSERT INTO strike_flow VALUES (%s, %s, %s, %s, %s, %s, %s, %s)", (current_time, r['strike'], r['ce_oi'], r['ce_vol'], r['ce_ltp'], r['pe_oi'], r['pe_vol'], r['pe_ltp']))
+                c.execute(
+                    "INSERT INTO strike_flow VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)", 
+                    (current_time, r['strike'], r['ce_oi'], r['ce_vol'], r['ce_ltp'], r['pe_oi'], r['pe_vol'], r['pe_ltp'], r['ce_oich'], r['ce_oichp'], r['pe_oich'], r['pe_oichp'])
+                )
         
         df_history = pd.read_sql_query("SELECT * FROM flow_history ORDER BY timestamp ASC", conn)
         df_flow = pd.read_sql_query("SELECT * FROM strike_flow", conn)
@@ -343,6 +369,11 @@ else:
                 
             lite_conn = sqlite3.connect("temp_lookback.db")
             df_flow = pd.read_sql_query("SELECT * FROM strike_flow", lite_conn)
+            
+            # Patcher: Ensure old DB files don't crash the new metric engine
+            for col in ['ce_oich', 'ce_oichp', 'pe_oich', 'pe_oichp']:
+                if col not in df_flow.columns: df_flow[col] = 0.0
+                
             df_history = pd.read_sql_query("SELECT * FROM flow_history ORDER BY timestamp ASC", lite_conn)
             lite_conn.close()
             os.remove("temp_lookback.db")
@@ -379,30 +410,24 @@ if app_mode == "📁 Offline DB File Lookback":
 target_strikes = [atm_strike + (i * 50) for i in range(-10, 11)]
 target_strikes.sort(reverse=True)
 
-df_delta = pd.DataFrame(index=target_strikes)
-df_delta['Δ CE Vol'] = df_curr['ce_vol'] - df_prev['ce_vol']
-df_delta['Δ CE OI'] = df_curr['ce_oi'] - df_prev['ce_oi']
-df_delta['Δ PE OI'] = df_curr['pe_oi'] - df_prev['pe_oi']
-df_delta['Δ PE Vol'] = df_curr['pe_vol'] - df_prev['pe_vol']
-
-df_delta['CE OI % Chg'] = (df_delta['Δ CE OI'] / df_prev['ce_oi'].replace(0, 1)) * 100
-df_delta['PE OI % Chg'] = (df_delta['Δ PE OI'] / df_prev['pe_oi'].replace(0, 1)) * 100
-
+# Generate Exact Metric Grid Mappings
 display_rows = []
 for strike in target_strikes:
     is_atm = (strike == atm_strike)
     
+    # 1. PULL CALL METRICS DIRECTLY FROM DAILY API FIELDS
     ce_vol = df_curr.loc[strike, 'ce_vol'] if strike in df_curr.index else 0
     ce_oi = df_curr.loc[strike, 'ce_oi'] if strike in df_curr.index else 0
-    ce_oi_chg = df_delta.loc[strike, 'Δ CE OI'] if strike in df_delta.index else 0
-    ce_oi_pct = df_delta.loc[strike, 'CE OI % Chg'] if strike in df_delta.index else 0
-    ce_traded = df_delta.loc[strike, 'Δ CE Vol'] if strike in df_delta.index else 0
+    ce_oi_chg = df_curr.loc[strike, 'ce_oich'] if ('ce_oich' in df_curr.columns and strike in df_curr.index) else 0
+    ce_oi_pct = df_curr.loc[strike, 'ce_oichp'] if ('ce_oichp' in df_curr.columns and strike in df_curr.index) else 0
+    ce_traded = ce_vol / LOT_SIZE_NIFTY # Fyers Returns Shares. Convert to Lots (Contracts).
     
+    # 2. PULL PUT METRICS DIRECTLY FROM DAILY API FIELDS
     pe_vol = df_curr.loc[strike, 'pe_vol'] if strike in df_curr.index else 0
     pe_oi = df_curr.loc[strike, 'pe_oi'] if strike in df_curr.index else 0
-    pe_oi_chg = df_delta.loc[strike, 'Δ PE OI'] if strike in df_delta.index else 0
-    pe_oi_pct = df_delta.loc[strike, 'PE OI % Chg'] if strike in df_delta.index else 0
-    pe_traded = df_delta.loc[strike, 'Δ PE Vol'] if strike in df_delta.index else 0
+    pe_oi_chg = df_curr.loc[strike, 'pe_oich'] if ('pe_oich' in df_curr.columns and strike in df_curr.index) else 0
+    pe_oi_pct = df_curr.loc[strike, 'pe_oichp'] if ('pe_oichp' in df_curr.columns and strike in df_curr.index) else 0
+    pe_traded = pe_vol / LOT_SIZE_NIFTY
     
     display_rows.append({
         "CE Traded Contracts": format_indian_num(ce_traded),
