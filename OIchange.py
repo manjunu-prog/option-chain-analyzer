@@ -283,6 +283,13 @@ if app_mode == "🔴 Live Exchange Node":
     strike_oi_totals, current_strike_data = {}, []
     target_strikes = [atm_strike + (i * 50) for i in range(-10, 11)]
 
+    # --- DEBUG: Show raw Fyers contract keys (remove once OI change is confirmed working) ---
+    if options_list:
+        with st.expander("🔧 DEBUG: Raw Fyers Contract Fields (first contract)", expanded=True):
+            sample = options_list[0]
+            st.write("**All keys returned by Fyers:**", list(sample.keys()))
+            st.write("**Full contract object:**", sample)
+
     for contract in options_list:
         opt_type, strike = contract.get("option_type"), contract.get("strike_price")
         
