@@ -86,6 +86,27 @@ def get_live_quotes(fyers, symbols_list):
     except Exception:
         return {}
 
+def get_last_closing_spot(fyers, symbol="NSE:NIFTY50-INDEX"):
+    """Fetches the last daily close price if live quotes fail (e.g., weekends)."""
+    try:
+        end_date = datetime.date.today()
+        start_date = end_date - datetime.timedelta(days=5)
+        data = {
+            "symbol": symbol,
+            "resolution": "D",
+            "date_format": "1",
+            "range_from": start_date.strftime('%Y-%m-%d'),
+            "range_to": end_date.strftime('%Y-%m-%d'),
+            "cont_flag": "1"
+        }
+        res = fyers.history(data=data)
+        if res and res.get('s') == 'ok' and len(res.get('candles', [])) > 0:
+            last_candle = res['candles'][-1]
+            return float(last_candle[4])
+    except Exception as e:
+        st.error(f"Historical fallback error: {e}")
+    return None
+
 def color_coding(val):
     color = ''
     if isinstance(val, str):
@@ -93,7 +114,6 @@ def color_coding(val):
         elif val.startswith('-') or "🔴" in val or "SHORTS" in val: color = '#f87171' 
     return f'color: {color}' if color else ''
 
-# NUMBER FORMATTING UTILITIES FOR THE MATRIX
 def format_indian_num(number):
     if pd.isna(number): return "0"
     s = str(int(number))
@@ -182,9 +202,8 @@ def backup_and_send_telegram(supabase_conn):
         else: st.error(f"Telegram Failure: {response.json()}")
     except Exception as ex: st.error(f"Backup Error: {ex}")
 
-
 # =====================================================================
-# SIDEBAR NAVIGATION INTERFACE: MODE SELECTOR SWITCH
+# SIDEBAR NAVIGATION INTERFACE
 # =====================================================================
 with st.sidebar:
     st.header("🎛️ Operational Mode Matrix")
@@ -193,18 +212,25 @@ with st.sidebar:
 
 offline_data_ready = False
 df_history, df_flow = pd.DataFrame(), pd.DataFrame()
+manual_spot = 0.0
 
 if app_mode == "🔴 Live Exchange Node":
     st_autorefresh(interval=180000, key="matrix_autorefresh")
     
     with st.sidebar:
         st.header("Gateway Security Credentials")
+        
+        # ALL CREDENTIALS RESTORED EXACTLY AS REQUESTED
         input_fy_id = st.text_input("Fyers ID", value="FAJ88605")
         input_pin = st.text_input("Security PIN", value="4089", type="password")
         input_totp = st.text_input("TOTP Seed Key", value="ZHOQNKKVMI7IRCAPUFX7OXRMPFXRYVU6", type="password")
         input_app_id = st.text_input("App ID Parameter", value="Q3B2S22L5M")
         input_app_secret = st.text_input("Client Secret Key", value="PWZD03ONQ4", type="password")
         input_redirect = st.text_input("Redirect URI End-point", value="https://trade.fyers.in/api-login/redirect-uri/index.html")
+             
+        st.markdown("---")
+        st.subheader("Manual Data Overrides")
+        manual_spot = st.number_input("Override NIFTY Spot Price (Leave 0 to use API)", value=0.0, step=1.0)
         
         if st.button("Establish Production Gateway"):
             with st.spinner("Connecting server clusters to exchange node..."):
@@ -226,20 +252,28 @@ if app_mode == "🔴 Live Exchange Node":
     batch_2 = REMAINING_25_SYMBOLS
     spot_raw = {**get_live_quotes(fyers, batch_1), **get_live_quotes(fyers, batch_2)}
 
-    if not spot_raw or "NSE:NIFTY50-INDEX" not in spot_raw:
-        st.error("LIVE DATA NOT AVAILABLE — NO TRADE (Spot fetch failed)")
-        st.stop()
+    # Apply manual spot, fallback to history if market closed, else use live data
+    if manual_spot > 0:
+        nifty_spot = manual_spot
+        open_price, prev_close = nifty_spot, nifty_spot 
+    else:
+        if not spot_raw or "NSE:NIFTY50-INDEX" not in spot_raw:
+            st.warning("⚠️ Live quotes unavailable (Market Closed). Attempting to fetch historical EOD data for analysis...")
+            historical_close = get_last_closing_spot(fyers)
+            if historical_close:
+                nifty_spot = historical_close
+                open_price, prev_close = historical_close, historical_close
+                st.success(f"✅ Loaded last market close: ₹{nifty_spot:,.2f}")
+            else:
+                st.error("LIVE DATA AND HISTORICAL FALLBACK FAILED. Please enter a Manual Spot Price in the sidebar.")
+                st.stop()
+        else:
+            nifty_spot = float(spot_raw["NSE:NIFTY50-INDEX"]["lp"])
+            open_price = float(spot_raw["NSE:NIFTY50-INDEX"]["open_price"])
+            prev_close = float(spot_raw["NSE:NIFTY50-INDEX"]["prev_close_price"])
 
-    nifty_spot = float(spot_raw["NSE:NIFTY50-INDEX"]["lp"])
-    open_price = float(spot_raw["NSE:NIFTY50-INDEX"]["open_price"])
-    prev_close = float(spot_raw["NSE:NIFTY50-INDEX"]["prev_close_price"])
     atm_strike = round(nifty_spot / 50) * 50
 
-    vix_data = spot_raw.get("NSE:INDIAVIX-INDEX", {})
-    vix_lp, vix_prev = float(vix_data.get("lp", 15.0)), float(vix_data.get("prev_close_price", 15.0))
-    vix_pct_change = ((vix_lp - vix_prev) / vix_prev) * 100 if vix_prev > 0 else 0.0
-
-    # Increased strikecount to 30 to ensure we capture the full ATM +/- 10 range safely
     chain_response = fyers.optionchain(data={"symbol": "NSE:NIFTY50-INDEX", "strikecount": 30, "timestamp": "", "greeks": "1"})
     if not chain_response or chain_response.get("s") != "ok":
         st.error("LIVE DATA NOT AVAILABLE (Option chain API failed)")
@@ -251,8 +285,6 @@ if app_mode == "🔴 Live Exchange Node":
     # --- PROCESS REALTIME RECORDS TO SUPABASE ---
     total_ce_oi, total_pe_oi, total_ce_vol, total_pe_vol = 0, 0, 0, 0
     strike_oi_totals, current_strike_data = {}, []
-    
-    # Target strikes expanded to +/- 10
     target_strikes = [atm_strike + (i * 50) for i in range(-10, 11)]
 
     for contract in options_list:
@@ -271,9 +303,8 @@ if app_mode == "🔴 Live Exchange Node":
             match['pe_oi'], match['pe_vol'], match['pe_ltp'] = oi_val, vol_val, ltp_val
             total_pe_oi += oi_val; total_pe_vol += vol_val
 
-    atm_call_contract = next((c for c in options_list if c.get("option_type") == "CE" and c.get("strike_price") == atm_strike), None)
-    matched_put_contract = min([c for c in options_list if c.get("option_type") == "PE"], key=lambda x: abs(float(x.get("ltp", 0)) - float(atm_call_contract.get("ltp", 0))))
-    matched_put_strike = matched_put_contract.get("strike_price")
+    atm_call_contract = next((c for c in options_list if c.get("option_type") == "CE" and c.get("strike_price") == atm_strike), {"oi": 0, "ltp": 0})
+    matched_put_contract = min([c for c in options_list if c.get("option_type") == "PE"], key=lambda x: abs(float(x.get("ltp", 0)) - float(atm_call_contract.get("ltp", 0))), default={"oi":0, "strike_price": atm_strike})
 
     try:
         conn = psycopg2.connect(st.secrets["SUPABASE_URI"]); conn.autocommit = True; c = conn.cursor()
@@ -333,7 +364,7 @@ df_flow['timestamp'] = pd.to_datetime(df_flow['timestamp'])
 unique_times = np.sort(df_flow['timestamp'].unique())
 
 if len(unique_times) < 2:
-    st.info("🕒 Gathering baseline data. Tables print upon next 3-minute iteration loop step.")
+    st.info("🕒 Gathering baseline data. ATM ±10 matrices will print upon the next 3-minute iteration step.")
     st.stop()
 
 t_current, t_prev = unique_times[-1], unique_times[-2]
@@ -345,7 +376,6 @@ if app_mode == "📁 Offline DB File Lookback":
     atm_strike = target_strikes[len(target_strikes)//2] 
     nifty_spot = df_curr.loc[atm_strike, 'ce_ltp'] if atm_strike in df_curr.index else 0.0 
 
-# Force ATM +/- 10 structure & sort descending for standard chain view
 target_strikes = [atm_strike + (i * 50) for i in range(-10, 11)]
 target_strikes.sort(reverse=True)
 
@@ -355,11 +385,9 @@ df_delta['Δ CE OI'] = df_curr['ce_oi'] - df_prev['ce_oi']
 df_delta['Δ PE OI'] = df_curr['pe_oi'] - df_prev['pe_oi']
 df_delta['Δ PE Vol'] = df_curr['pe_vol'] - df_prev['pe_vol']
 
-# Calculate precise percentage changes
 df_delta['CE OI % Chg'] = (df_delta['Δ CE OI'] / df_prev['ce_oi'].replace(0, 1)) * 100
 df_delta['PE OI % Chg'] = (df_delta['Δ PE OI'] / df_prev['pe_oi'].replace(0, 1)) * 100
 
-# Compile Exact Metric Grid for Display
 display_rows = []
 for strike in target_strikes:
     is_atm = (strike == atm_strike)
@@ -394,7 +422,6 @@ for strike in target_strikes:
 
 df_display_matrix = pd.DataFrame(display_rows)
 
-# Generate Narrative Mappings
 narrative_data = []
 for i in range(1, len(df_history)):
     prev, curr = df_history.iloc[i-1], df_history.iloc[i]
@@ -433,7 +460,6 @@ with col_backup:
 
 st.markdown("---")
 
-# --- THE MASTER REALTIME OPTION FLOW GRID ---
 st.subheader("🔬 NIFTY ATM ±10 Matrix (3-Min Auto-Refresh)")
 if not df_display_matrix.empty:
     def style_option_chain(st_df):
@@ -453,7 +479,6 @@ if not df_display_matrix.empty:
 
 st.markdown("---")
 
-# --- THE INSTITUTIONAL SHIFT STORY ROW ---
 st.subheader("📖 The Institutional Narrative (Shift Story)")
 if not df_narrative.empty:
     st.dataframe(df_narrative.style.map(color_coding, subset=['Δ Total Call OI', 'Δ Total Put OI']), use_container_width=True, hide_index=True)
