@@ -283,12 +283,17 @@ if app_mode == "🔴 Live Exchange Node":
     strike_oi_totals, current_strike_data = {}, []
     target_strikes = [atm_strike + (i * 50) for i in range(-10, 11)]
 
-    # --- DEBUG: Show raw Fyers contract keys (remove once OI change is confirmed working) ---
-    if options_list:
-        with st.expander("🔧 DEBUG: Raw Fyers Contract Fields (first contract)", expanded=True):
-            sample = options_list[0]
-            st.write("**All keys returned by Fyers:**", list(sample.keys()))
-            st.write("**Full contract object:**", sample)
+    # --- DEBUG: Dump full raw chain_response to find OI change fields ---
+    with st.expander("🔧 DEBUG: Full Raw chain_response from Fyers", expanded=True):
+        st.write("**Top-level keys:**", list(chain_response.keys()))
+        st.write("**data keys:**", list(chain_data.keys()))
+        if options_list:
+            st.write("**First contract (all fields):**", options_list[0])
+            st.write("**Second contract (all fields):**", options_list[1] if len(options_list) > 1 else "N/A")
+        # Also dump anything outside optionsChain in chain_data
+        for k, v in chain_data.items():
+            if k != "optionsChain":
+                st.write(f"**chain_data['{k}']:**", v)
 
     for contract in options_list:
         opt_type, strike = contract.get("option_type"), contract.get("strike_price")
@@ -436,15 +441,20 @@ for strike in target_strikes:
     pe_oi_pct = df_curr.loc[strike, 'pe_oichp'] if ('pe_oichp' in df_curr.columns and strike in df_curr.index) else 0
     pe_traded = pe_vol / LOT_SIZE_NIFTY
     
-    # --- UPDATE THIS DISPLAY MAPPING ---
     display_rows.append({
-    "⚡ STRIKE ⚡": f"🎯 {strike} (ATM)" if strike == atm_strike else f"{strike}",
-    "CE Volumes": format_indian_num(row.get('ce_vol', 0)),
-    "CE OI Change": format_indian_num(row.get('ce_oich', 0)),  # Pulls the API's actual daily change
-    "CE OI % Chg": format_percentage(row.get('ce_oichp', 0)),  # Pulls the API's actual daily % change
-    "PE OI % Chg": format_percentage(row.get('pe_oichp', 0)),
-    "PE OI Change": format_indian_num(row.get('pe_oich', 0)),
-    "PE Volumes": format_indian_num(row.get('pe_vol', 0)),
+        "CE Traded Contracts": format_indian_num(ce_traded),
+        "CE OI % Chg": format_percentage(ce_oi_pct),
+        "CE OI Change": format_indian_num(ce_oi_chg),
+        "CE Open Interest": format_indian_num(ce_oi),
+        "CE Volumes": format_indian_num(ce_vol),
+        
+        "⚡ STRIKE ⚡": f"🎯 {int(strike)} (ATM)" if is_atm else f"{int(strike)}",
+        
+        "PE Volumes": format_indian_num(pe_vol),
+        "PE Open Interest": format_indian_num(pe_oi),
+        "PE OI Change": format_indian_num(pe_oi_chg),
+        "PE OI % Chg": format_percentage(pe_oi_pct),
+        "PE Traded Contracts": format_indian_num(pe_traded),
     })
 
 df_display_matrix = pd.DataFrame(display_rows)
