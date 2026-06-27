@@ -151,27 +151,46 @@ def show_strike_popup(strike, df_flow, is_atm_anchor):
     df_st['d_pe_oi'] = df_st['pe_oi'].diff().fillna(0).astype(int)
     df_st['d_ce_vo'] = df_st['ce_vol'].diff().fillna(0).astype(int)
     df_st['d_pe_vo'] = df_st['pe_vol'].diff().fillna(0).astype(int)
-    
+
+    # Pull daily OI change columns if available (stored from API)
+    for col in ['ce_oich', 'ce_oichp', 'pe_oich', 'pe_oichp']:
+        if col not in df_st.columns:
+            df_st[col] = 0.0
+
     signals = []
     for _, r in df_st.iterrows():
         signals.append(calculate_orderflow_signal(r['d_ce_oi'], r['d_pe_oi'], r['d_ce_vo'], r['d_pe_vo']))
     df_st['🎯 ACTION SIGNAL'] = signals
-    
+
     df_st.sort_values('timestamp', ascending=False, inplace=True)
     df_st['Time'] = df_st['timestamp'].dt.strftime('%H:%M:%S %p')
-    
+
+    def fmt_chg(x):
+        x = int(x)
+        return f"+{x:,}" if x > 0 else (f"{x:,}" if x < 0 else "0")
+
+    def fmt_pct(x):
+        return f"+{x:.2f}%" if x > 0 else (f"{x:.2f}%" if x < 0 else "+0.00%")
+
     df_render = pd.DataFrame()
-    df_render['Timestamp'] = df_st['Time']
-    df_render['🎯 ACTION SIGNAL'] = df_st['🎯 ACTION SIGNAL']
-    df_render['Change in OI - CE'] = df_st['d_ce_oi'].apply(lambda x: f"+{int(x):,}" if x > 0 else (f"{int(x):,}" if x < 0 else "0"))
-    df_render['Change in OI - PE'] = df_st['d_pe_oi'].apply(lambda x: f"+{int(x):,}" if x > 0 else (f"{int(x):,}" if x < 0 else "0"))
-    df_render['Change in Vol - CE'] = df_st['d_ce_vo'].apply(lambda x: f"+{int(x):,}" if x > 0 else (f"{int(x):,}" if x < 0 else "0"))
-    df_render['Change in Vol - PE'] = df_st['d_pe_vo'].apply(lambda x: f"+{int(x):,}" if x > 0 else (f"{int(x):,}" if x < 0 else "0"))
-    
-    styled_popup = df_render.style.map(
-        color_coding, 
-        subset=['🎯 ACTION SIGNAL', 'Change in OI - CE', 'Change in OI - PE', 'Change in Vol - CE', 'Change in Vol - PE']
-    )
+    df_render['Timestamp']           = df_st['Time'].values
+    df_render['🎯 ACTION SIGNAL']    = df_st['🎯 ACTION SIGNAL'].values
+    df_render['CE OI Change (Day)']  = df_st['ce_oich'].apply(fmt_chg).values
+    df_render['CE OI % Chg (Day)']   = df_st['ce_oichp'].apply(fmt_pct).values
+    df_render['PE OI Change (Day)']  = df_st['pe_oich'].apply(fmt_chg).values
+    df_render['PE OI % Chg (Day)']   = df_st['pe_oichp'].apply(fmt_pct).values
+    df_render['Δ OI CE (3-Min)']     = df_st['d_ce_oi'].apply(fmt_chg).values
+    df_render['Δ OI PE (3-Min)']     = df_st['d_pe_oi'].apply(fmt_chg).values
+    df_render['Δ Vol CE (3-Min)']    = df_st['d_ce_vo'].apply(fmt_chg).values
+    df_render['Δ Vol PE (3-Min)']    = df_st['d_pe_vo'].apply(fmt_chg).values
+
+    color_cols = ['🎯 ACTION SIGNAL',
+                  'CE OI Change (Day)', 'CE OI % Chg (Day)',
+                  'PE OI Change (Day)', 'PE OI % Chg (Day)',
+                  'Δ OI CE (3-Min)', 'Δ OI PE (3-Min)',
+                  'Δ Vol CE (3-Min)', 'Δ Vol PE (3-Min)']
+
+    styled_popup = df_render.style.map(color_coding, subset=color_cols)
     st.dataframe(styled_popup, use_container_width=True, hide_index=True)
 
 def backup_and_send_telegram(supabase_conn):
