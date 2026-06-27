@@ -283,18 +283,6 @@ if app_mode == "🔴 Live Exchange Node":
     strike_oi_totals, current_strike_data = {}, []
     target_strikes = [atm_strike + (i * 50) for i in range(-10, 11)]
 
-    # --- DEBUG: Dump full raw chain_response to find OI change fields ---
-    with st.expander("🔧 DEBUG: Full Raw chain_response from Fyers", expanded=True):
-        st.write("**Top-level keys:**", list(chain_response.keys()))
-        st.write("**data keys:**", list(chain_data.keys()))
-        if options_list:
-            st.write("**First contract (all fields):**", options_list[0])
-            st.write("**Second contract (all fields):**", options_list[1] if len(options_list) > 1 else "N/A")
-        # Also dump anything outside optionsChain in chain_data
-        for k, v in chain_data.items():
-            if k != "optionsChain":
-                st.write(f"**chain_data['{k}']:**", v)
-
     for contract in options_list:
         opt_type, strike = contract.get("option_type"), contract.get("strike_price")
         
@@ -302,8 +290,15 @@ if app_mode == "🔴 Live Exchange Node":
         oi_val = int(contract.get("oi", 0))
         vol_val = int(contract.get("volume", 0))
         ltp_val = float(contract.get("ltp", 0.0))
-        oich_val = float(contract.get("chng_oi") or contract.get("oich") or contract.get("oi_change") or 0.0)
-        oichp_val = float(contract.get("net_chng_oi_pct") or contract.get("oichp") or contract.get("oi_change_pct") or 0.0)
+        # Use oich/oichp if Fyers populates them; else calculate from oi - prev_oi
+        raw_oich = float(contract.get("oich") or 0.0)
+        raw_oichp = float(contract.get("oichp") or 0.0)
+        prev_oi_val = float(contract.get("prev_oi") or 0.0)
+        if raw_oich == 0 and prev_oi_val > 0:
+            raw_oich = float(oi_val) - prev_oi_val
+            raw_oichp = (raw_oich / prev_oi_val * 100) if prev_oi_val != 0 else 0.0
+        oich_val = raw_oich
+        oichp_val = raw_oichp
         
         strike_oi_totals[strike] = strike_oi_totals.get(strike, 0) + oi_val
         
