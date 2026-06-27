@@ -436,20 +436,15 @@ for strike in target_strikes:
     pe_oi_pct = df_curr.loc[strike, 'pe_oichp'] if ('pe_oichp' in df_curr.columns and strike in df_curr.index) else 0
     pe_traded = pe_vol / LOT_SIZE_NIFTY
     
+    # --- UPDATE THIS DISPLAY MAPPING ---
     display_rows.append({
-        "CE Traded Contracts": format_indian_num(ce_traded),
-        "CE OI % Chg": format_percentage(ce_oi_pct),
-        "CE OI Change": format_indian_num(ce_oi_chg),
-        "CE Open Interest": format_indian_num(ce_oi),
-        "CE Volumes": format_indian_num(ce_vol),
-        
-        "⚡ STRIKE ⚡": f"🎯 {int(strike)} (ATM)" if is_atm else f"{int(strike)}",
-        
-        "PE Volumes": format_indian_num(pe_vol),
-        "PE Open Interest": format_indian_num(pe_oi),
-        "PE OI Change": format_indian_num(pe_oi_chg),
-        "PE OI % Chg": format_percentage(pe_oi_pct),
-        "PE Traded Contracts": format_indian_num(pe_traded),
+    "⚡ STRIKE ⚡": f"🎯 {strike} (ATM)" if strike == atm_strike else f"{strike}",
+    "CE Volumes": format_indian_num(row.get('ce_vol', 0)),
+    "CE OI Change": format_indian_num(row.get('ce_oich', 0)),  # Pulls the API's actual daily change
+    "CE OI % Chg": format_percentage(row.get('ce_oichp', 0)),  # Pulls the API's actual daily % change
+    "PE OI % Chg": format_percentage(row.get('pe_oichp', 0)),
+    "PE OI Change": format_indian_num(row.get('pe_oich', 0)),
+    "PE Volumes": format_indian_num(row.get('pe_vol', 0)),
     })
 
 df_display_matrix = pd.DataFrame(display_rows)
