@@ -14,13 +14,6 @@ from urllib.parse import urlparse, parse_qs
 from fyers_apiv3 import fyersModel
 from streamlit_autorefresh import st_autorefresh
 
-# Import local credentials configuration
-try:
-    import credential
-except ImportError:
-    st.error("⚠️ credential.py not found. Please create one to securely store FY_ID, FY_PIN, FY_TOTP, APP_ID, APP_SECRET, and REDIRECT_URI.")
-    st.stop()
-
 # Suppress pandas warning for using raw psycopg2 connection
 warnings.filterwarnings('ignore', category=UserWarning)
 
@@ -100,8 +93,8 @@ def color_coding(val):
         elif val.startswith('-') or "🔴" in val or "SHORTS" in val: color = '#f87171' 
     return f'color: {color}' if color else ''
 
+# NUMBER FORMATTING UTILITIES FOR THE MATRIX
 def format_indian_num(number):
-    """Formats integers into the traditional Indian numbering system."""
     if pd.isna(number): return "0"
     s = str(int(number))
     if len(s) <= 3: return s
@@ -111,8 +104,7 @@ def format_indian_num(number):
     while len(remaining) > 2:
         remaining_fmt = "," + remaining[-2:] + remaining_fmt
         remaining = remaining[:-2]
-    if remaining:
-        remaining_fmt = remaining + remaining_fmt
+    if remaining: remaining_fmt = remaining + remaining_fmt
     return remaining_fmt + "," + last_three
 
 def format_percentage(val):
@@ -121,16 +113,11 @@ def format_percentage(val):
 
 # --- ADVANCED RADAR SIGNAL INTERPRETER ---
 def calculate_orderflow_signal(d_ce_oi, d_pe_oi, d_ce_vo, d_pe_vo):
-    if d_ce_oi == 0 and d_pe_oi == 0 and d_ce_vo == 0 and d_pe_vo == 0:
-        return "⚖️ NO FLOW"
-    if d_ce_oi > d_pe_oi and d_pe_vo > d_ce_vo:
-        return "🔴 PE BUY"
-    elif d_pe_oi > d_ce_oi and d_ce_vo > d_pe_vo:
-        return "🟢 CE BUY"
-    elif d_ce_oi > d_pe_oi and d_ce_vo > d_pe_vo:
-        return "📉 CE SHORTS"
-    elif d_pe_oi > d_ce_oi and d_pe_vo > d_ce_vo:
-        return "📈 PE SHORTS"
+    if d_ce_oi == 0 and d_pe_oi == 0 and d_ce_vo == 0 and d_pe_vo == 0: return "⚖️ NO FLOW"
+    if d_ce_oi > d_pe_oi and d_pe_vo > d_ce_vo: return "🔴 PE BUY"
+    elif d_pe_oi > d_ce_oi and d_ce_vo > d_pe_vo: return "🟢 CE BUY"
+    elif d_ce_oi > d_pe_oi and d_ce_vo > d_pe_vo: return "📉 CE SHORTS"
+    elif d_pe_oi > d_ce_oi and d_pe_vo > d_ce_vo: return "📈 PE SHORTS"
     return "⚖️ NEUTRAL"
 
 # --- POP-UP MODAL TIMELINE ENGINE ---
@@ -204,31 +191,20 @@ with st.sidebar:
     app_mode = st.radio("Select Active Core Node Environment", ["🔴 Live Exchange Node", "📁 Offline DB File Lookback"])
     st.markdown("---")
 
-# Initialize macro layout values to avoid scope errors
 offline_data_ready = False
 df_history, df_flow = pd.DataFrame(), pd.DataFrame()
-manual_spot = 0.0
 
 if app_mode == "🔴 Live Exchange Node":
-    # Auto-refresh only running during live tracking view sessions
     st_autorefresh(interval=180000, key="matrix_autorefresh")
     
     with st.sidebar:
         st.header("Gateway Security Credentials")
-        input_fy_id = getattr(credential, 'FY_ID', '')
-        input_pin = getattr(credential, 'FY_PIN', '')
-        input_totp = getattr(credential, 'FY_TOTP', '')
-        input_app_id = getattr(credential, 'APP_ID', '')
-        input_app_secret = getattr(credential, 'APP_SECRET', '')
-        input_redirect = getattr(credential, 'REDIRECT_URI', '')
-        
-        if not input_fy_id:
-             st.error("Credentials missing from credential.py")
-             
-        # Manual Override Input for Spot
-        st.markdown("---")
-        st.subheader("Manual Data Overrides")
-        manual_spot = st.number_input("Override NIFTY Spot Price (Leave 0 to use API)", value=0.0, step=1.0)
+        input_fy_id = st.text_input("Fyers ID", value="FAJ88605")
+        input_pin = st.text_input("Security PIN", value="4089", type="password")
+        input_totp = st.text_input("TOTP Seed Key", value="ZHOQNKKVMI7IRCAPUFX7OXRMPFXRYVU6", type="password")
+        input_app_id = st.text_input("App ID Parameter", value="Q3B2S22L5M")
+        input_app_secret = st.text_input("Client Secret Key", value="PWZD03ONQ4", type="password")
+        input_redirect = st.text_input("Redirect URI End-point", value="https://trade.fyers.in/api-login/redirect-uri/index.html")
         
         if st.button("Establish Production Gateway"):
             with st.spinner("Connecting server clusters to exchange node..."):
@@ -250,25 +226,21 @@ if app_mode == "🔴 Live Exchange Node":
     batch_2 = REMAINING_25_SYMBOLS
     spot_raw = {**get_live_quotes(fyers, batch_1), **get_live_quotes(fyers, batch_2)}
 
-    # Apply manual spot price if typed, otherwise fallback to API
-    if manual_spot > 0:
-        nifty_spot = manual_spot
-        open_price, prev_close = nifty_spot, nifty_spot 
-    else:
-        if not spot_raw or "NSE:NIFTY50-INDEX" not in spot_raw:
-            st.error("LIVE DATA NOT AVAILABLE — NO TRADE (Spot fetch failed)")
-            st.stop()
-        nifty_spot = float(spot_raw["NSE:NIFTY50-INDEX"]["lp"])
-        open_price = float(spot_raw["NSE:NIFTY50-INDEX"]["open_price"])
-        prev_close = float(spot_raw["NSE:NIFTY50-INDEX"]["prev_close_price"])
+    if not spot_raw or "NSE:NIFTY50-INDEX" not in spot_raw:
+        st.error("LIVE DATA NOT AVAILABLE — NO TRADE (Spot fetch failed)")
+        st.stop()
 
+    nifty_spot = float(spot_raw["NSE:NIFTY50-INDEX"]["lp"])
+    open_price = float(spot_raw["NSE:NIFTY50-INDEX"]["open_price"])
+    prev_close = float(spot_raw["NSE:NIFTY50-INDEX"]["prev_close_price"])
     atm_strike = round(nifty_spot / 50) * 50
 
     vix_data = spot_raw.get("NSE:INDIAVIX-INDEX", {})
     vix_lp, vix_prev = float(vix_data.get("lp", 15.0)), float(vix_data.get("prev_close_price", 15.0))
     vix_pct_change = ((vix_lp - vix_prev) / vix_prev) * 100 if vix_prev > 0 else 0.0
 
-    chain_response = fyers.optionchain(data={"symbol": "NSE:NIFTY50-INDEX", "strikecount": 25, "timestamp": "", "greeks": "1"})
+    # Increased strikecount to 30 to ensure we capture the full ATM +/- 10 range safely
+    chain_response = fyers.optionchain(data={"symbol": "NSE:NIFTY50-INDEX", "strikecount": 30, "timestamp": "", "greeks": "1"})
     if not chain_response or chain_response.get("s") != "ok":
         st.error("LIVE DATA NOT AVAILABLE (Option chain API failed)")
         st.stop()
@@ -280,7 +252,7 @@ if app_mode == "🔴 Live Exchange Node":
     total_ce_oi, total_pe_oi, total_ce_vol, total_pe_vol = 0, 0, 0, 0
     strike_oi_totals, current_strike_data = {}, []
     
-    # Expand target matrix array to ATM +/- 10
+    # Target strikes expanded to +/- 10
     target_strikes = [atm_strike + (i * 50) for i in range(-10, 11)]
 
     for contract in options_list:
@@ -288,7 +260,6 @@ if app_mode == "🔴 Live Exchange Node":
         oi_val, vol_val, ltp_val = int(contract.get("oi", 0)), int(contract.get("volume", 0)), float(contract.get("ltp", 0.0))
         strike_oi_totals[strike] = strike_oi_totals.get(strike, 0) + oi_val
         
-        # Build structured object arrays
         match = next((d for d in current_strike_data if d['strike'] == strike), None)
         if not match:
             match = {"strike": strike, "ce_oi": 0, "ce_vol": 0, "ce_ltp": 0.0, "pe_oi": 0, "pe_vol": 0, "pe_ltp": 0.0}
@@ -300,16 +271,15 @@ if app_mode == "🔴 Live Exchange Node":
             match['pe_oi'], match['pe_vol'], match['pe_ltp'] = oi_val, vol_val, ltp_val
             total_pe_oi += oi_val; total_pe_vol += vol_val
 
-    atm_call_contract = next((c for c in options_list if c.get("option_type") == "CE" and c.get("strike_price") == atm_strike), {"oi": 0, "ltp": 0})
-    matched_put_contract = min([c for c in options_list if c.get("option_type") == "PE"], key=lambda x: abs(float(x.get("ltp", 0)) - float(atm_call_contract.get("ltp", 0))), default={"oi":0, "strike_price": atm_strike})
+    atm_call_contract = next((c for c in options_list if c.get("option_type") == "CE" and c.get("strike_price") == atm_strike), None)
+    matched_put_contract = min([c for c in options_list if c.get("option_type") == "PE"], key=lambda x: abs(float(x.get("ltp", 0)) - float(atm_call_contract.get("ltp", 0))))
+    matched_put_strike = matched_put_contract.get("strike_price")
 
-    # Sync snapshot maps directly with Supabase Postgres tables
     try:
         conn = psycopg2.connect(st.secrets["SUPABASE_URI"]); conn.autocommit = True; c = conn.cursor()
         c.execute("CREATE TABLE IF NOT EXISTS flow_history (timestamp TIMESTAMP, total_ce_oi BIGINT, total_pe_oi BIGINT, atm_ce_oi BIGINT, atm_pe_oi BIGINT)")
         c.execute("CREATE TABLE IF NOT EXISTS strike_flow (timestamp TIMESTAMP, strike INTEGER, ce_oi BIGINT, ce_vol BIGINT, ce_ltp REAL, pe_oi BIGINT, pe_vol BIGINT, pe_ltp REAL)")
         
-        # Fresh trading day slate wipe parameters
         c.execute("SELECT timestamp FROM flow_history ORDER BY timestamp DESC LIMIT 1")
         last_entry = c.fetchone()
         if last_entry and last_entry[0].date() != get_ist_now().date():
@@ -356,14 +326,14 @@ else:
         st.stop()
 
 # =====================================================================
-# UNIFIED MATHEMATICAL MODELING LAYER (SHARED BY BOTH MODES)
+# UNIFIED MATHEMATICAL MODELING LAYER
 # =====================================================================
 df_history['timestamp'] = pd.to_datetime(df_history['timestamp'])
 df_flow['timestamp'] = pd.to_datetime(df_flow['timestamp'])
 unique_times = np.sort(df_flow['timestamp'].unique())
 
 if len(unique_times) < 2:
-    st.info("🕒 Gathering baseline data. ATM ±10 matrices will print upon the next 3-minute iteration step.")
+    st.info("🕒 Gathering baseline data. Tables print upon next 3-minute iteration loop step.")
     st.stop()
 
 t_current, t_prev = unique_times[-1], unique_times[-2]
@@ -372,11 +342,10 @@ df_prev = df_flow[df_flow['timestamp'] == t_prev].set_index('strike')
 
 if app_mode == "📁 Offline DB File Lookback":
     target_strikes = sorted(df_flow['strike'].unique())
-    atm_strike = target_strikes[len(target_strikes)//2]
-    nifty_spot = df_curr.loc[atm_strike, 'ce_ltp'] if atm_strike in df_curr.index else 0.0
+    atm_strike = target_strikes[len(target_strikes)//2] 
+    nifty_spot = df_curr.loc[atm_strike, 'ce_ltp'] if atm_strike in df_curr.index else 0.0 
 
-# Ensure target_strikes covers the new wide ±10 radius constraint 
-# and sort in reverse so higher strikes are on top (standard terminal layout)
+# Force ATM +/- 10 structure & sort descending for standard chain view
 target_strikes = [atm_strike + (i * 50) for i in range(-10, 11)]
 target_strikes.sort(reverse=True)
 
@@ -386,17 +355,15 @@ df_delta['Δ CE OI'] = df_curr['ce_oi'] - df_prev['ce_oi']
 df_delta['Δ PE OI'] = df_curr['pe_oi'] - df_prev['pe_oi']
 df_delta['Δ PE Vol'] = df_curr['pe_vol'] - df_prev['pe_vol']
 
-# Calculate exact % Changes
+# Calculate precise percentage changes
 df_delta['CE OI % Chg'] = (df_delta['Δ CE OI'] / df_prev['ce_oi'].replace(0, 1)) * 100
 df_delta['PE OI % Chg'] = (df_delta['Δ PE OI'] / df_prev['pe_oi'].replace(0, 1)) * 100
 
-# Reconstruct exact user-requested output mappings
+# Compile Exact Metric Grid for Display
 display_rows = []
 for strike in target_strikes:
     is_atm = (strike == atm_strike)
-    strike_str = f"🎯 {int(strike)} (ATM)" if is_atm else f"{int(strike)}"
     
-    # Safely pull absolute and delta metrics per strike
     ce_vol = df_curr.loc[strike, 'ce_vol'] if strike in df_curr.index else 0
     ce_oi = df_curr.loc[strike, 'ce_oi'] if strike in df_curr.index else 0
     ce_oi_chg = df_delta.loc[strike, 'Δ CE OI'] if strike in df_delta.index else 0
@@ -416,7 +383,7 @@ for strike in target_strikes:
         "CE Open Interest": format_indian_num(ce_oi),
         "CE Volumes": format_indian_num(ce_vol),
         
-        "⚡ STRIKE ⚡": strike_str,
+        "⚡ STRIKE ⚡": f"🎯 {int(strike)} (ATM)" if is_atm else f"{int(strike)}",
         
         "PE Volumes": format_indian_num(pe_vol),
         "PE Open Interest": format_indian_num(pe_oi),
@@ -447,7 +414,7 @@ for i in range(1, len(df_history)):
 df_narrative = pd.DataFrame(narrative_data).iloc[::-1]
 
 # =====================================================================
-# DASHBOARD RENDERING INTERFACE (DYNAMIC DISPLAY BLOCKS)
+# DASHBOARD RENDERING INTERFACE
 # =====================================================================
 if app_mode == "📁 Offline DB File Lookback":
     st.warning(f"🕒 OFFLINE SIMULATION CONTEXT INTERFACE. Displaying metrics captured directly from your loaded file backup.")
@@ -497,7 +464,6 @@ st.markdown("### 🔍 Interactive Strike Cascades (Modal Windows)")
 grid_container = st.container()
 with grid_container:
     cols_per_row = 4
-    # Reset sorting for chronological rendering on buttons if needed, or keep descending
     button_strikes = sorted(target_strikes)
     for i in range(0, len(button_strikes), cols_per_row):
         row_strikes = button_strikes[i:i+cols_per_row]
