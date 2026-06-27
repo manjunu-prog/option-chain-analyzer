@@ -388,34 +388,51 @@ else:
         st.stop()
 
 # =====================================================================
-# UNIFIED MATHEMATICAL MODELING LAYER (UPDATED)
+# UNIFIED MATHEMATICAL MODELING LAYER
 # =====================================================================
 df_history['timestamp'] = pd.to_datetime(df_history['timestamp'])
 df_flow['timestamp'] = pd.to_datetime(df_flow['timestamp'])
+unique_times = np.sort(df_flow['timestamp'].unique())
 
-# ... (Previous DF setup remains the same)
+if len(unique_times) < 2:
+    st.info("🕒 Gathering baseline data. ATM ±10 matrices will print upon the next 3-minute iteration step.")
+    st.stop()
 
+t_current, t_prev = unique_times[-1], unique_times[-2]
+df_curr = df_flow[df_flow['timestamp'] == t_current].set_index('strike')
+df_prev = df_flow[df_flow['timestamp'] == t_prev].set_index('strike')
+
+if app_mode == "📁 Offline DB File Lookback":
+    target_strikes = sorted(df_flow['strike'].unique())
+    atm_strike = target_strikes[len(target_strikes)//2] 
+    nifty_spot = df_curr.loc[atm_strike, 'ce_ltp'] if atm_strike in df_curr.index else 0.0 
+
+target_strikes = [atm_strike + (i * 50) for i in range(-10, 11)]
+target_strikes.sort(reverse=True)
+
+# Generate Exact Metric Grid Mappings
 display_rows = []
 for strike in target_strikes:
     is_atm = (strike == atm_strike)
     
-    # 1. PULL CALL METRICS
-    ce_oi = df_curr.loc[strike, 'ce_oi'] if strike in df_curr.index else 0
+    # 1. PULL CALL METRICS DIRECTLY FROM DAILY API FIELDS
     ce_vol = df_curr.loc[strike, 'ce_vol'] if strike in df_curr.index else 0
-    # USE API PROVIDED CHANGES (oich / oichp) INSTEAD OF CALCULATED DELTAS
+    ce_oi = df_curr.loc[strike, 'ce_oi'] if strike in df_curr.index else 0
     ce_oi_chg = df_curr.loc[strike, 'ce_oich'] if ('ce_oich' in df_curr.columns and strike in df_curr.index) else 0
     ce_oi_pct = df_curr.loc[strike, 'ce_oichp'] if ('ce_oichp' in df_curr.columns and strike in df_curr.index) else 0
+    ce_traded = ce_vol / LOT_SIZE_NIFTY # Fyers Returns Shares. Convert to Lots (Contracts).
     
-    # 2. PULL PUT METRICS
-    pe_oi = df_curr.loc[strike, 'pe_oi'] if strike in df_curr.index else 0
+    # 2. PULL PUT METRICS DIRECTLY FROM DAILY API FIELDS
     pe_vol = df_curr.loc[strike, 'pe_vol'] if strike in df_curr.index else 0
+    pe_oi = df_curr.loc[strike, 'pe_oi'] if strike in df_curr.index else 0
     pe_oi_chg = df_curr.loc[strike, 'pe_oich'] if ('pe_oich' in df_curr.columns and strike in df_curr.index) else 0
     pe_oi_pct = df_curr.loc[strike, 'pe_oichp'] if ('pe_oichp' in df_curr.columns and strike in df_curr.index) else 0
-
+    pe_traded = pe_vol / LOT_SIZE_NIFTY
+    
     display_rows.append({
-        "CE Traded Contracts": format_indian_num(ce_vol), # Display raw volume as per terminal
-        "CE OI % Chg": format_percentage(ce_oi_pct),      # Now using API's oichp
-        "CE OI Change": format_indian_num(ce_oi_chg),     # Now using API's oich
+        "CE Traded Contracts": format_indian_num(ce_traded),
+        "CE OI % Chg": format_percentage(ce_oi_pct),
+        "CE OI Change": format_indian_num(ce_oi_chg),
         "CE Open Interest": format_indian_num(ce_oi),
         "CE Volumes": format_indian_num(ce_vol),
         
@@ -425,7 +442,7 @@ for strike in target_strikes:
         "PE Open Interest": format_indian_num(pe_oi),
         "PE OI Change": format_indian_num(pe_oi_chg),
         "PE OI % Chg": format_percentage(pe_oi_pct),
-        "PE Traded Contracts": format_indian_num(pe_vol), # Display raw volume as per terminal
+        "PE Traded Contracts": format_indian_num(pe_traded),
     })
 
 df_display_matrix = pd.DataFrame(display_rows)
