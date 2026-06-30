@@ -536,7 +536,8 @@ if app_mode == "🔴 Live Exchange Node":
         c.execute("SELECT timestamp FROM flow_history ORDER BY timestamp DESC LIMIT 1")
         last_entry = c.fetchone()
         if last_entry and last_entry[0].date() != get_ist_now().date():
-            c.execute("TRUNCATE TABLE flow_history; TRUNCATE TABLE strike_flow;")
+            c.execute("TRUNCATE TABLE flow_history")
+            c.execute("TRUNCATE TABLE strike_flow")
 
         current_time = get_ist_now()
         c.execute("INSERT INTO flow_history VALUES (%s, %s, %s, %s, %s)", (current_time, total_ce_oi, total_pe_oi, int(atm_call_contract.get("oi",0)), int(matched_put_contract.get("oi",0))))
@@ -574,7 +575,10 @@ if app_mode == "🔴 Live Exchange Node":
         df_flow = pd.read_sql_query("SELECT * FROM strike_flow", conn)
         conn.close()
     except Exception as e:
-        st.error(f"🚨 Database Engine Failure: {e}"); st.stop()
+        import traceback
+        st.error(f"🚨 Database Engine Failure: {e}")
+        st.code(traceback.format_exc())
+        st.stop()
 
 else:
     # =====================================================================
