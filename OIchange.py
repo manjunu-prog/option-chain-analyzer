@@ -27,159 +27,11 @@ LAST_ENTRY_TIME = datetime.time(14, 0)
 PRODUCT_TYPE = "NRML"
 ORDER_TYPE = 2       
 
-# --- TELEGRAM ALERT CONFIG ---
-TELEGRAM_BOT_TOKEN = st.secrets.get("TELEGRAM_BOT_TOKEN", "")
-TELEGRAM_CHAT_ID   = st.secrets.get("TELEGRAM_CHAT_ID", "")
-
-def send_telegram(msg: str, repeat: int = 1):
-    """Send Telegram alert. repeat=N sends same message N times so you never miss it."""
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        return
-    import time
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    for i in range(repeat):
-        try:
-            requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": msg, "parse_mode": "HTML"}, timeout=5)
-            if repeat > 1 and i < repeat - 1:
-                time.sleep(0.5)  # Small delay between bursts to avoid Telegram flood limit
-        except Exception:
-            pass
-
-def check_reversal_alerts(df_flow, atm_strike, sent_alerts: set,
-                           oi_spike_lots=500, vol_spike_lots=1000,
-                           pcr_bear_thresh=1.5, pcr_bull_thresh=0.6,
-                           consec_intervals=3, repeat_count=10):
-    alerts = []
-    now_str = get_ist_now().strftime("%H:%M")
-    OI_SPIKE  = oi_spike_lots * 25
-    VOL_SPIKE = vol_spike_lots * 25
-
-    strike_deltas = {}
-    for strike in df_flow["strike"].unique():
-        df_s = df_flow[df_flow["strike"] == strike].sort_values("timestamp").reset_index(drop=True)
-        if len(df_s) < 2:
-            continue
-        deltas = []
-        for i in range(1, len(df_s)):
-            deltas.append({
-                "ts":       df_s.iloc[i]["timestamp"],
-                "d_ce_oi":  float(df_s.iloc[i]["ce_oi"] or 0) - float(df_s.iloc[i-1]["ce_oi"] or 0),
-                "d_pe_oi":  float(df_s.iloc[i]["pe_oi"] or 0) - float(df_s.iloc[i-1]["pe_oi"] or 0),
-                "d_ce_vol": float(df_s.iloc[i]["ce_vol"] or 0) - float(df_s.iloc[i-1]["ce_vol"] or 0),
-                "d_pe_vol": float(df_s.iloc[i]["pe_vol"] or 0) - float(df_s.iloc[i-1]["pe_vol"] or 0),
-                "ce_oi":    float(df_s.iloc[i]["ce_oi"] or 0),
-                "pe_oi":    float(df_s.iloc[i]["pe_oi"] or 0),
-            })
-        strike_deltas[strike] = deltas
-
-    for strike, deltas in strike_deltas.items():
-        if not deltas:
-            continue
-        atm_tag = " 🎯ATM" if strike == atm_strike else ""
-        tag     = f"{int(strike)}{atm_tag}"
-        latest  = deltas[-1]
-        d_ce_oi  = latest["d_ce_oi"]
-        d_pe_oi  = latest["d_pe_oi"]
-        d_ce_vol = latest["d_ce_vol"]
-        d_pe_vol = latest["d_pe_vol"]
-        ce_oi    = latest["ce_oi"]
-        pe_oi    = latest["pe_oi"]
-
-        # SIGNAL 1: Single-interval spike
-        if d_pe_oi > OI_SPIKE:
-            key = f"PE_SPIKE_{strike}_{now_str}"
-            if key not in sent_alerts:
-                alerts.append((key,
-                    f"🔴 <b>BEARISH — PUT LOADING</b>\nStrike <b>{tag}</b> | {now_str}\nPE OI +{d_pe_oi/25:,.0f} lots\n⚠️ Bears building — watch DOWNSIDE",
-                    "HIGH", repeat_count))
-
-        if d_ce_oi > OI_SPIKE:
-            key = f"CE_SPIKE_{strike}_{now_str}"
-            if key not in sent_alerts:
-                alerts.append((key,
-                    f"🟢 <b>BULLISH — CALL LOADING</b>\nStrike <b>{tag}</b> | {now_str}\nCE OI +{d_ce_oi/25:,.0f} lots\n⚡ Bulls building — watch UPSIDE",
-                    "HIGH", repeat_count))
-
-        # SIGNAL 2: Consecutive buildup (the smart money early-warning)
-        if len(deltas) >= consec_intervals:
-            last_n = deltas[-consec_intervals:]
-            pe_consec    = sum(1 for d in last_n if d["d_pe_oi"] > OI_SPIKE // 2)
-            ce_consec    = sum(1 for d in last_n if d["d_ce_oi"] > OI_SPIKE // 2)
-            total_pe_built = sum(d["d_pe_oi"] for d in last_n)
-            total_ce_built = sum(d["d_ce_oi"] for d in last_n)
-
-            if pe_consec >= consec_intervals:
-                key = f"PE_CONSEC_{strike}_{now_str}"
-                if key not in sent_alerts:
-                    alerts.append((key,
-                        f"🚨🔴 <b>SMART MONEY — SUSTAINED PUT BUILDUP</b>\nStrike <b>{tag}</b> | {now_str}\n{consec_intervals} consecutive intervals of PUT loading\nTotal PE OI added: +{total_pe_built/25:,.0f} lots\n🎯 BIG MOVE LIKELY — WATCH DOWNSIDE BREAK",
-                        "CRITICAL", repeat_count))
-
-            if ce_consec >= consec_intervals:
-                key = f"CE_CONSEC_{strike}_{now_str}"
-                if key not in sent_alerts:
-                    alerts.append((key,
-                        f"🚨🟢 <b>SMART MONEY — SUSTAINED CALL BUILDUP</b>\nStrike <b>{tag}</b> | {now_str}\n{consec_intervals} consecutive intervals of CALL loading\nTotal CE OI added: +{total_ce_built/25:,.0f} lots\n🎯 BIG MOVE LIKELY — WATCH UPSIDE BREAK",
-                        "CRITICAL", repeat_count))
-
-        # SIGNAL 3: PCR flip
-        if ce_oi > 0 and len(deltas) >= 2 and deltas[-2]["ce_oi"] > 0:
-            pcr_now  = pe_oi / ce_oi
-            pcr_prev = deltas[-2]["pe_oi"] / deltas[-2]["ce_oi"]
-            if pcr_prev < pcr_bear_thresh and pcr_now >= pcr_bear_thresh:
-                key = f"PCR_BEAR_{strike}_{now_str}"
-                if key not in sent_alerts:
-                    alerts.append((key,
-                        f"🔴 <b>PCR FLIP — BEARISH WALL</b>\nStrike <b>{tag}</b> | {now_str}\nPCR {pcr_prev:.2f} → {pcr_now:.2f} (crossed {pcr_bear_thresh})\nPut writers dominating — RESISTANCE forming",
-                        "MEDIUM", repeat_count))
-            if pcr_prev > pcr_bull_thresh and pcr_now <= pcr_bull_thresh:
-                key = f"PCR_BULL_{strike}_{now_str}"
-                if key not in sent_alerts:
-                    alerts.append((key,
-                        f"🟢 <b>PCR FLIP — BULLISH WALL</b>\nStrike <b>{tag}</b> | {now_str}\nPCR {pcr_prev:.2f} → {pcr_now:.2f} (below {pcr_bull_thresh})\nCall writers dominating — SUPPORT forming",
-                        "MEDIUM", repeat_count))
-
-        # SIGNAL 4: Unwinding (reversal signal)
-        if d_ce_oi < -OI_SPIKE and d_ce_vol > VOL_SPIKE:
-            key = f"CE_UNWIND_{strike}_{now_str}"
-            if key not in sent_alerts:
-                alerts.append((key,
-                    f"⚡ <b>CE UNWINDING — CALL SELLERS COVERING</b>\nStrike <b>{tag}</b> | {now_str}\nCE OI {d_ce_oi/25:,.0f} lots | Vol spiking\n🔄 Bears exiting — BULLISH REVERSAL possible",
-                    "HIGH", repeat_count))
-
-        if d_pe_oi < -OI_SPIKE and d_pe_vol > VOL_SPIKE:
-            key = f"PE_UNWIND_{strike}_{now_str}"
-            if key not in sent_alerts:
-                alerts.append((key,
-                    f"⚡ <b>PE UNWINDING — PUT SELLERS COVERING</b>\nStrike <b>{tag}</b> | {now_str}\nPE OI {d_pe_oi/25:,.0f} lots | Vol spiking\n🔄 Bulls exiting — BEARISH REVERSAL possible",
-                    "HIGH", repeat_count))
-
-        # SIGNAL 5: Massive block (waterfall / institutional)
-        MASSIVE = OI_SPIKE * 5
-        if d_ce_oi > MASSIVE:
-            key = f"CE_MASSIVE_{strike}_{now_str}"
-            if key not in sent_alerts:
-                alerts.append((key,
-                    f"🚨🚨 <b>MASSIVE CALL BLOCK — WATERFALL RISK</b>\nStrike <b>{tag}</b> | {now_str}\nCE OI +{d_ce_oi/25:,.0f} lots IN ONE INTERVAL\n📌 Institutional sell block — HIGH PROBABILITY DOWNSIDE",
-                    "CRITICAL", repeat_count))
-        if d_pe_oi > MASSIVE:
-            key = f"PE_MASSIVE_{strike}_{now_str}"
-            if key not in sent_alerts:
-                alerts.append((key,
-                    f"🚨🚨 <b>MASSIVE PUT BLOCK — RALLY RISK</b>\nStrike <b>{tag}</b> | {now_str}\nPE OI +{d_pe_oi/25:,.0f} lots IN ONE INTERVAL\n📌 Institutional support block — HIGH PROBABILITY UPSIDE",
-                    "CRITICAL", repeat_count))
-
-    return alerts
-
 # --- IST TIMEZONE OVERRIDE ---
 IST = datetime.timezone(datetime.timedelta(hours=5, minutes=30))
 def get_ist_now():
     return datetime.datetime.now(IST).replace(tzinfo=None)
 
-if "sent_alerts" not in st.session_state:
-    st.session_state.sent_alerts = set()
-if "alert_log" not in st.session_state:
-    st.session_state.alert_log = []  # List of dicts: {time, severity, message}
 if "fyers_instance" not in st.session_state:
     st.session_state.fyers_instance = None
 if "authenticated" not in st.session_state:
@@ -235,6 +87,7 @@ def get_live_quotes(fyers, symbols_list):
         return {}
 
 def get_last_closing_spot(fyers, symbol="NSE:NIFTY50-INDEX"):
+    """Fetches the last daily close price if live quotes fail (e.g., weekends)."""
     try:
         end_date = datetime.date.today()
         start_date = end_date - datetime.timedelta(days=5)
@@ -299,48 +152,30 @@ def show_strike_popup(strike, df_flow, is_atm_anchor):
     df_st['d_pe_oi'] = df_st['pe_oi'].diff().fillna(0).astype(int)
     df_st['d_ce_vo'] = df_st['ce_vol'].diff().fillna(0).astype(int)
     df_st['d_pe_vo'] = df_st['pe_vol'].diff().fillna(0).astype(int)
-
-    # Pull daily OI change columns if available (stored from API)
-    for col in ['ce_oich', 'ce_oichp', 'pe_oich', 'pe_oichp']:
-        if col not in df_st.columns:
-            df_st[col] = 0.0
-
+    
     signals = []
     for _, r in df_st.iterrows():
         signals.append(calculate_orderflow_signal(r['d_ce_oi'], r['d_pe_oi'], r['d_ce_vo'], r['d_pe_vo']))
     df_st['🎯 ACTION SIGNAL'] = signals
-
+    
     df_st.sort_values('timestamp', ascending=False, inplace=True)
     df_st['Time'] = df_st['timestamp'].dt.strftime('%H:%M:%S %p')
-
-    def fmt_chg(x):
-        x = int(x)
-        return f"+{x:,}" if x > 0 else (f"{x:,}" if x < 0 else "0")
-
-    def fmt_pct(x):
-        return f"+{x:.2f}%" if x > 0 else (f"{x:.2f}%" if x < 0 else "+0.00%")
-
+    
     df_render = pd.DataFrame()
-    df_render['Timestamp']           = df_st['Time'].values
-    df_render['🎯 ACTION SIGNAL']    = df_st['🎯 ACTION SIGNAL'].values
-    df_render['CE OI Change (Day)']  = df_st['ce_oich'].apply(fmt_chg).values
-    df_render['CE OI % Chg (Day)']   = df_st['ce_oichp'].apply(fmt_pct).values
-    df_render['PE OI Change (Day)']  = df_st['pe_oich'].apply(fmt_chg).values
-    df_render['PE OI % Chg (Day)']   = df_st['pe_oichp'].apply(fmt_pct).values
-    df_render['Δ OI CE (3-Min)']     = df_st['d_ce_oi'].apply(fmt_chg).values
-    df_render['Δ OI PE (3-Min)']     = df_st['d_pe_oi'].apply(fmt_chg).values
-    df_render['Δ Vol CE (3-Min)']    = df_st['d_ce_vo'].apply(fmt_chg).values
-    df_render['Δ Vol PE (3-Min)']    = df_st['d_pe_vo'].apply(fmt_chg).values
-
-    color_cols = ['🎯 ACTION SIGNAL',
-                  'CE OI Change (Day)', 'CE OI % Chg (Day)',
-                  'PE OI Change (Day)', 'PE OI % Chg (Day)',
-                  'Δ OI CE (3-Min)', 'Δ OI PE (3-Min)',
-                  'Δ Vol CE (3-Min)', 'Δ Vol PE (3-Min)']
-
-    styled_popup = df_render.style.map(color_coding, subset=color_cols)
+    df_render['Timestamp'] = df_st['Time']
+    df_render['🎯 ACTION SIGNAL'] = df_st['🎯 ACTION SIGNAL']
+    df_render['Change in OI - CE'] = df_st['d_ce_oi'].apply(lambda x: f"+{int(x):,}" if x > 0 else (f"{int(x):,}" if x < 0 else "0"))
+    df_render['Change in OI - PE'] = df_st['d_pe_oi'].apply(lambda x: f"+{int(x):,}" if x > 0 else (f"{int(x):,}" if x < 0 else "0"))
+    df_render['Change in Vol - CE'] = df_st['d_ce_vo'].apply(lambda x: f"+{int(x):,}" if x > 0 else (f"{int(x):,}" if x < 0 else "0"))
+    df_render['Change in Vol - PE'] = df_st['d_pe_vo'].apply(lambda x: f"+{int(x):,}" if x > 0 else (f"{int(x):,}" if x < 0 else "0"))
+    
+    styled_popup = df_render.style.map(
+        color_coding, 
+        subset=['🎯 ACTION SIGNAL', 'Change in OI - CE', 'Change in OI - PE', 'Change in Vol - CE', 'Change in Vol - PE']
+    )
     st.dataframe(styled_popup, use_container_width=True, hide_index=True)
 
+# --- BACKUP DUMP TO TELEGRAM CHANNELS ---
 def backup_and_send_telegram(supabase_conn):
     try:
         st.info("🔄 Compiling database records into local SQLite binary snapshot...")
@@ -374,31 +209,6 @@ with st.sidebar:
     st.header("🎛️ Operational Mode Matrix")
     app_mode = st.radio("Select Active Core Node Environment", ["🔴 Live Exchange Node", "📁 Offline DB File Lookback"])
     st.markdown("---")
-    st.header("📲 Telegram Alerts")
-    if not TELEGRAM_BOT_TOKEN:
-        st.warning("Add TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID to Streamlit secrets.")
-    else:
-        st.success("🟢 Telegram Active")
-        if st.button("🔔 Send Test Alert Now"):
-            send_telegram(
-                "✅ <b>Nifty OI Alert System — LIVE</b>\n"
-                "Connected and monitoring. You will receive alerts like this one up to 10x per signal.",
-                repeat=3
-            )
-            st.sidebar.success("Test sent (3x)!")
-    st.markdown("**📡 Alert Settings**")
-    st.session_state["tg_repeat"]  = st.slider("🔁 Repeat each alert (times)", 1, 15, 10, help="Sends same Telegram message N times so you never miss it")
-    st.session_state["consec_n"]   = st.slider("📈 Consecutive intervals for buildup alert", 2, 6, 3, help="How many back-to-back intervals needed to trigger smart money alert")
-    with st.expander("⚙️ OI / PCR Thresholds"):
-        st.session_state["oi_thresh"]  = st.number_input("OI Spike threshold (lots)", value=500, step=50)
-        st.session_state["vol_thresh"] = st.number_input("Vol Spike threshold (lots)", value=1000, step=100)
-        st.session_state["pcr_bear"]   = st.number_input("PCR Bear flip level", value=1.5, step=0.1)
-        st.session_state["pcr_bull"]   = st.number_input("PCR Bull flip level", value=0.6, step=0.1)
-    if st.button("🗑️ Clear Alert History"):
-        st.session_state.sent_alerts = set()
-        st.session_state.alert_log = []
-        st.sidebar.success("Alert history cleared")
-    st.markdown("---")
 
 offline_data_ready = False
 df_history, df_flow = pd.DataFrame(), pd.DataFrame()
@@ -410,6 +220,7 @@ if app_mode == "🔴 Live Exchange Node":
     with st.sidebar:
         st.header("Gateway Security Credentials")
         
+        # ALL CREDENTIALS RESTORED EXACTLY AS REQUESTED
         input_fy_id = st.text_input("Fyers ID", value="FAJ88605")
         input_pin = st.text_input("Security PIN", value="4089", type="password")
         input_totp = st.text_input("TOTP Seed Key", value="ZHOQNKKVMI7IRCAPUFX7OXRMPFXRYVU6", type="password")
@@ -441,6 +252,7 @@ if app_mode == "🔴 Live Exchange Node":
     batch_2 = REMAINING_25_SYMBOLS
     spot_raw = {**get_live_quotes(fyers, batch_1), **get_live_quotes(fyers, batch_2)}
 
+    # Apply manual spot, fallback to history if market closed, else use live data
     if manual_spot > 0:
         nifty_spot = manual_spot
         open_price, prev_close = nifty_spot, nifty_spot 
@@ -477,39 +289,18 @@ if app_mode == "🔴 Live Exchange Node":
 
     for contract in options_list:
         opt_type, strike = contract.get("option_type"), contract.get("strike_price")
-        
-        # EXTRACTING CRITICAL API FIELDS (DAILY CHANGES)
-        oi_val = int(contract.get("oi", 0))
-        vol_val = int(contract.get("volume", 0))
-        ltp_val = float(contract.get("ltp", 0.0))
-        # Use oich/oichp if Fyers populates them; else calculate from oi - prev_oi
-        raw_oich = float(contract.get("oich") or 0.0)
-        raw_oichp = float(contract.get("oichp") or 0.0)
-        prev_oi_val = float(contract.get("prev_oi") or 0.0)
-        if raw_oich == 0 and prev_oi_val > 0:
-            raw_oich = float(oi_val) - prev_oi_val
-            raw_oichp = (raw_oich / prev_oi_val * 100) if prev_oi_val != 0 else 0.0
-        oich_val = raw_oich
-        oichp_val = raw_oichp
-        
+        oi_val, vol_val, ltp_val = int(contract.get("oi", 0)), int(contract.get("volume", 0)), float(contract.get("ltp", 0.0))
         strike_oi_totals[strike] = strike_oi_totals.get(strike, 0) + oi_val
         
         match = next((d for d in current_strike_data if d['strike'] == strike), None)
         if not match:
-            match = {
-                "strike": strike, 
-                "ce_oi": 0, "ce_vol": 0, "ce_ltp": 0.0, "ce_oich": 0.0, "ce_oichp": 0.0,
-                "pe_oi": 0, "pe_vol": 0, "pe_ltp": 0.0, "pe_oich": 0.0, "pe_oichp": 0.0
-            }
+            match = {"strike": strike, "ce_oi": 0, "ce_vol": 0, "ce_ltp": 0.0, "pe_oi": 0, "pe_vol": 0, "pe_ltp": 0.0}
             current_strike_data.append(match)
-            
         if opt_type == "CE":
             match['ce_oi'], match['ce_vol'], match['ce_ltp'] = oi_val, vol_val, ltp_val
-            match['ce_oich'], match['ce_oichp'] = oich_val, oichp_val
             total_ce_oi += oi_val; total_ce_vol += vol_val
         else:
             match['pe_oi'], match['pe_vol'], match['pe_ltp'] = oi_val, vol_val, ltp_val
-            match['pe_oich'], match['pe_oichp'] = oich_val, oichp_val
             total_pe_oi += oi_val; total_pe_vol += vol_val
 
     atm_call_contract = next((c for c in options_list if c.get("option_type") == "CE" and c.get("strike_price") == atm_strike), {"oi": 0, "ltp": 0})
@@ -518,20 +309,7 @@ if app_mode == "🔴 Live Exchange Node":
     try:
         conn = psycopg2.connect(st.secrets["SUPABASE_URI"]); conn.autocommit = True; c = conn.cursor()
         c.execute("CREATE TABLE IF NOT EXISTS flow_history (timestamp TIMESTAMP, total_ce_oi BIGINT, total_pe_oi BIGINT, atm_ce_oi BIGINT, atm_pe_oi BIGINT)")
-        
-        # UPGRADED SCHEMA: Now stores daily OI changes persistently
-        c.execute("""CREATE TABLE IF NOT EXISTS strike_flow (
-            timestamp TIMESTAMP, strike INTEGER, 
-            ce_oi BIGINT, ce_vol BIGINT, ce_ltp REAL, 
-            pe_oi BIGINT, pe_vol BIGINT, pe_ltp REAL,
-            ce_oich REAL DEFAULT 0, ce_oichp REAL DEFAULT 0,
-            pe_oich REAL DEFAULT 0, pe_oichp REAL DEFAULT 0
-        )""")
-        
-        # SAFE EVOLUTION: Add columns if table existed prior to this update
-        for col in ['ce_oich', 'ce_oichp', 'pe_oich', 'pe_oichp']:
-            try: c.execute(f"ALTER TABLE strike_flow ADD COLUMN {col} REAL DEFAULT 0")
-            except Exception: pass
+        c.execute("CREATE TABLE IF NOT EXISTS strike_flow (timestamp TIMESTAMP, strike INTEGER, ce_oi BIGINT, ce_vol BIGINT, ce_ltp REAL, pe_oi BIGINT, pe_vol BIGINT, pe_ltp REAL)")
         
         c.execute("SELECT timestamp FROM flow_history ORDER BY timestamp DESC LIMIT 1")
         last_entry = c.fetchone()
@@ -542,34 +320,8 @@ if app_mode == "🔴 Live Exchange Node":
         c.execute("INSERT INTO flow_history VALUES (%s, %s, %s, %s, %s)", (current_time, total_ce_oi, total_pe_oi, int(atm_call_contract.get("oi",0)), int(matched_put_contract.get("oi",0))))
         for r in current_strike_data:
             if r['strike'] in target_strikes:
-                c.execute(
-                    "INSERT INTO strike_flow VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)", 
-                    (current_time, r['strike'], r['ce_oi'], r['ce_vol'], r['ce_ltp'], r['pe_oi'], r['pe_vol'], r['pe_ltp'], r['ce_oich'], r['ce_oichp'], r['pe_oich'], r['pe_oichp'])
-                )
+                c.execute("INSERT INTO strike_flow VALUES (%s, %s, %s, %s, %s, %s, %s, %s)", (current_time, r['strike'], r['ce_oi'], r['ce_vol'], r['ce_ltp'], r['pe_oi'], r['pe_vol'], r['pe_ltp']))
         
-        # --- TELEGRAM REVERSAL ALERTS ---
-        df_flow_live = pd.read_sql_query("SELECT * FROM strike_flow", conn)
-        new_alerts = check_reversal_alerts(
-            df_flow_live, atm_strike, st.session_state.sent_alerts,
-            oi_spike_lots=st.session_state.get("oi_thresh", 500),
-            vol_spike_lots=st.session_state.get("vol_thresh", 1000),
-            pcr_bear_thresh=st.session_state.get("pcr_bear", 1.5),
-            pcr_bull_thresh=st.session_state.get("pcr_bull", 0.6),
-            consec_intervals=st.session_state.get("consec_n", 3),
-            repeat_count=st.session_state.get("tg_repeat", 10),
-        )
-        for key, msg, severity, repeat in new_alerts:
-            send_telegram(msg, repeat=repeat)
-            st.session_state.sent_alerts.add(key)
-            clean_msg = msg.replace("<b>","").replace("</b>","")
-            st.session_state.alert_log.insert(0, {
-                "time": get_ist_now().strftime("%H:%M:%S"),
-                "severity": severity,
-                "message": clean_msg
-            })
-            st.session_state.alert_log = st.session_state.alert_log[:50]  # keep last 50
-            st.toast(clean_msg[:120], icon="🚨")
-
         df_history = pd.read_sql_query("SELECT * FROM flow_history ORDER BY timestamp ASC", conn)
         df_flow = pd.read_sql_query("SELECT * FROM strike_flow", conn)
         conn.close()
@@ -591,11 +343,6 @@ else:
                 
             lite_conn = sqlite3.connect("temp_lookback.db")
             df_flow = pd.read_sql_query("SELECT * FROM strike_flow", lite_conn)
-            
-            # Patcher: Ensure old DB files don't crash the new metric engine
-            for col in ['ce_oich', 'ce_oichp', 'pe_oich', 'pe_oichp']:
-                if col not in df_flow.columns: df_flow[col] = 0.0
-                
             df_history = pd.read_sql_query("SELECT * FROM flow_history ORDER BY timestamp ASC", lite_conn)
             lite_conn.close()
             os.remove("temp_lookback.db")
@@ -632,24 +379,30 @@ if app_mode == "📁 Offline DB File Lookback":
 target_strikes = [atm_strike + (i * 50) for i in range(-10, 11)]
 target_strikes.sort(reverse=True)
 
-# Generate Exact Metric Grid Mappings
+df_delta = pd.DataFrame(index=target_strikes)
+df_delta['Δ CE Vol'] = df_curr['ce_vol'] - df_prev['ce_vol']
+df_delta['Δ CE OI'] = df_curr['ce_oi'] - df_prev['ce_oi']
+df_delta['Δ PE OI'] = df_curr['pe_oi'] - df_prev['pe_oi']
+df_delta['Δ PE Vol'] = df_curr['pe_vol'] - df_prev['pe_vol']
+
+df_delta['CE OI % Chg'] = (df_delta['Δ CE OI'] / df_prev['ce_oi'].replace(0, 1)) * 100
+df_delta['PE OI % Chg'] = (df_delta['Δ PE OI'] / df_prev['pe_oi'].replace(0, 1)) * 100
+
 display_rows = []
 for strike in target_strikes:
     is_atm = (strike == atm_strike)
     
-    # 1. PULL CALL METRICS DIRECTLY FROM DAILY API FIELDS
     ce_vol = df_curr.loc[strike, 'ce_vol'] if strike in df_curr.index else 0
     ce_oi = df_curr.loc[strike, 'ce_oi'] if strike in df_curr.index else 0
-    ce_oi_chg = df_curr.loc[strike, 'ce_oich'] if ('ce_oich' in df_curr.columns and strike in df_curr.index) else 0
-    ce_oi_pct = df_curr.loc[strike, 'ce_oichp'] if ('ce_oichp' in df_curr.columns and strike in df_curr.index) else 0
-    ce_traded = ce_vol / LOT_SIZE_NIFTY # Fyers Returns Shares. Convert to Lots (Contracts).
+    ce_oi_chg = df_delta.loc[strike, 'Δ CE OI'] if strike in df_delta.index else 0
+    ce_oi_pct = df_delta.loc[strike, 'CE OI % Chg'] if strike in df_delta.index else 0
+    ce_traded = df_delta.loc[strike, 'Δ CE Vol'] if strike in df_delta.index else 0
     
-    # 2. PULL PUT METRICS DIRECTLY FROM DAILY API FIELDS
     pe_vol = df_curr.loc[strike, 'pe_vol'] if strike in df_curr.index else 0
     pe_oi = df_curr.loc[strike, 'pe_oi'] if strike in df_curr.index else 0
-    pe_oi_chg = df_curr.loc[strike, 'pe_oich'] if ('pe_oich' in df_curr.columns and strike in df_curr.index) else 0
-    pe_oi_pct = df_curr.loc[strike, 'pe_oichp'] if ('pe_oichp' in df_curr.columns and strike in df_curr.index) else 0
-    pe_traded = pe_vol / LOT_SIZE_NIFTY
+    pe_oi_chg = df_delta.loc[strike, 'Δ PE OI'] if strike in df_delta.index else 0
+    pe_oi_pct = df_delta.loc[strike, 'PE OI % Chg'] if strike in df_delta.index else 0
+    pe_traded = df_delta.loc[strike, 'Δ PE Vol'] if strike in df_delta.index else 0
     
     display_rows.append({
         "CE Traded Contracts": format_indian_num(ce_traded),
@@ -706,26 +459,6 @@ with col_backup:
             backup_and_send_telegram(psycopg2.connect(st.secrets["SUPABASE_URI"]))
 
 st.markdown("---")
-
-# ── LIVE ALERT FEED PANEL ─────────────────────────────────────────────────
-if st.session_state.get("alert_log"):
-    st.markdown("### 🚨 Live Alert Feed")
-    severity_colors = {"CRITICAL": "#ff2222", "HIGH": "#ff8c00", "MEDIUM": "#ffd700"}
-    severity_bg     = {"CRITICAL": "#2a0000", "HIGH": "#1a0a00", "MEDIUM": "#1a1500"}
-    for a in st.session_state.alert_log[:10]:  # show last 10
-        sev   = a.get("severity", "MEDIUM")
-        color = severity_colors.get(sev, "#ffd700")
-        bg    = severity_bg.get(sev, "#111")
-        lines = a["message"].split("\n")
-        title = lines[0] if lines else a["message"]
-        body  = " | ".join(lines[1:]) if len(lines) > 1 else ""
-        st.markdown(
-            f"""<div style="background:{bg};border-left:4px solid {color};
-            padding:8px 14px;border-radius:4px;margin-bottom:6px;">
-            <span style="color:{color};font-weight:bold;font-size:13px;">[{a['time']}] {title}</span><br>
-            <span style="color:#ccc;font-size:12px;">{body}</span>
-            </div>""", unsafe_allow_html=True)
-    st.markdown("---")
 
 st.subheader("🔬 NIFTY ATM ±10 Matrix (3-Min Auto-Refresh)")
 if not df_display_matrix.empty:
