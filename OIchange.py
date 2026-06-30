@@ -427,8 +427,18 @@ if app_mode == "🔴 Live Exchange Node":
                 if token:
                     st.session_state.fyers_instance = fyersModel.FyersModel(client_id=f"{input_app_id}-100", token=token, is_async=False, log_path="")
                     st.session_state.authenticated = True
+                    st.session_state.auth_creds = (input_fy_id, input_pin, input_totp, input_app_id, input_app_secret, input_redirect)
                     st.success("Synchronized successfully. Node pipelines online.")
                 else: st.session_state.authenticated = False
+
+    # AUTO-RELOGIN: if session state was wiped (e.g. app restart, crash) but we have saved creds, silently reconnect
+    if (not st.session_state.authenticated or st.session_state.fyers_instance is None) and st.session_state.get("auth_creds"):
+        with st.spinner("🔄 Session lost — auto-reconnecting to exchange node..."):
+            fy_id, pin, totp, app_id, app_secret, redirect = st.session_state.auth_creds
+            token = execute_auto_login(fy_id, pin, totp, app_id, "100", app_secret, redirect)
+            if token:
+                st.session_state.fyers_instance = fyersModel.FyersModel(client_id=f"{app_id}-100", token=token, is_async=False, log_path="")
+                st.session_state.authenticated = True
 
     if not st.session_state.authenticated or st.session_state.fyers_instance is None:
         st.info("⚡ System status: Awaiting secure initialization parameters via sidebar.")
