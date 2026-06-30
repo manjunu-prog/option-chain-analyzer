@@ -3,6 +3,7 @@ import datetime
 import hashlib
 import os
 import sqlite3
+import tempfile
 import threading
 import time
 import warnings
@@ -22,19 +23,7 @@ warnings.filterwarnings("ignore", category=UserWarning)
 st.set_page_config(page_title="Candle Volume Spike Radar", layout="wide")
 
 IST = datetime.timezone(datetime.timedelta(hours=5, minutes=30))
-DB_PATH = "/Users/apple/Downloads/candle_volume_spike_radar.db"
-
-FYERS_ID = "FAJ88605"
-FYERS_PIN = "4089"
-FYERS_TOTP = "ZHOQNKKVMI7IRCAPUFX7OXRMPFXRYVU6"
-FYERS_APP_ID = "Q3B2S22L5M"
-FYERS_APP_SECRET = "PWZD03ONQ4"
-FYERS_REDIRECT_URI = "https://trade.fyers.in/api-login/redirect-uri/index.html"
-
-TELEGRAM_BOT_TOKEN = "7851529826:AAHfyHVrVZi5iQubljaNgde76gPhr8pxql4"
-TELEGRAM_CHAT_ID = "567677761"
-DEFAULT_SUPABASE_URI = "postgresql://postgres.hcujozwjlsprkmnwlrxz:qyQ+N8+sr+fHens@aws-1-ap-southeast-1.pooler.supabase.com:5432/postgres"
-
+DB_PATH = os.path.join(tempfile.gettempdir(), "candle_volume_spike_radar.db")
 
 def get_secret_value(key, default=""):
     try:
@@ -43,6 +32,16 @@ def get_secret_value(key, default=""):
         return default
 
 
+FYERS_ID = get_secret_value("FYERS_ID", "FAJ88605")
+FYERS_PIN = get_secret_value("FYERS_PIN", "4089")
+FYERS_TOTP = get_secret_value("FYERS_TOTP", "ZHOQNKKVMI7IRCAPUFX7OXRMPFXRYVU6")
+FYERS_APP_ID = get_secret_value("FYERS_APP_ID", "Q3B2S22L5M")
+FYERS_APP_SECRET = get_secret_value("FYERS_APP_SECRET", "PWZD03ONQ4")
+FYERS_REDIRECT_URI = get_secret_value("FYERS_REDIRECT_URI", "https://trade.fyers.in/api-login/redirect-uri/index.html")
+
+TELEGRAM_BOT_TOKEN = get_secret_value("TELEGRAM_BOT_TOKEN", "7851529826:AAHfyHVrVZi5iQubljaNgde76gPhr8pxql4")
+TELEGRAM_CHAT_ID = get_secret_value("TELEGRAM_CHAT_ID", "567677761")
+DEFAULT_SUPABASE_URI = "postgresql://postgres.hcujozwjlsprkmnwlrxz:qyQ+N8+sr+fHens@aws-1-ap-southeast-1.pooler.supabase.com:5432/postgres"
 SUPABASE_URI = get_secret_value("SUPABASE_URI", DEFAULT_SUPABASE_URI)
 
 INSTRUMENTS = {
@@ -388,7 +387,7 @@ def send_db_backup_to_telegram():
     try:
         df_snapshots = read_snapshots()
         df_alerts = read_alert_log(limit=100000)
-        backup_path = f"/Users/apple/Downloads/candle_volume_backup_{get_ist_now().strftime('%Y%m%d_%H%M')}.db"
+        backup_path = os.path.join(tempfile.gettempdir(), f"candle_volume_backup_{get_ist_now().strftime('%Y%m%d_%H%M')}.db")
         conn = sqlite3.connect(backup_path)
         df_snapshots.to_sql("option_minute_snapshot", conn, if_exists="replace", index=False)
         df_alerts.to_sql("alert_log", conn, if_exists="replace", index=False)
