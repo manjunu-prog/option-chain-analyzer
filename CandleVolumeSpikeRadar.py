@@ -331,6 +331,32 @@ def read_alert_log(limit=30):
         conn.close()
 
 
+def read_uploaded_db(uploaded_file):
+    if uploaded_file is None:
+        return pd.DataFrame(), pd.DataFrame()
+
+    upload_path = os.path.join(tempfile.gettempdir(), f"uploaded_candle_volume_{int(time.time())}.db")
+    with open(upload_path, "wb") as handle:
+        handle.write(uploaded_file.getbuffer())
+
+    conn = sqlite3.connect(upload_path)
+    try:
+        snapshots = pd.read_sql_query("SELECT * FROM option_minute_snapshot ORDER BY ts ASC", conn)
+        try:
+            alerts = pd.read_sql_query("SELECT * FROM alert_log ORDER BY ts DESC", conn)
+        except Exception:
+            alerts = pd.DataFrame()
+        if not alerts.empty and "alert_key" in alerts.columns and "key" not in alerts.columns:
+            alerts = alerts.rename(columns={"alert_key": "key"})
+        return snapshots, alerts
+    finally:
+        conn.close()
+        try:
+            os.remove(upload_path)
+        except Exception:
+            pass
+
+
 def alert_already_sent(key):
     if st.session_state.get("use_supabase"):
         conn = get_supabase_conn()
@@ -779,13 +805,19 @@ init_db()
 
 with st.sidebar:
     st.header("Candle Volume Radar")
-    storage_mode = st.radio("Storage", ["Supabase Cloud", "Local SQLite"], horizontal=False)
-    st.session_state.use_supabase = storage_mode == "Supabase Cloud"
-    if st.session_state.use_supabase:
-        if init_supabase():
-            st.success("Supabase connected")
+    app_mode = st.radio("Mode", ["Live Radar", "Uploaded DB Analysis"], horizontal=False)
+    uploaded_db = None
+    if app_mode == "Uploaded DB Analysis":
+        uploaded_db = st.file_uploader("Upload candle volume .db backup", type=["db"])
+        st.info("Upload mode is read-only. Fyers login and Telegram alerts are disabled.")
     else:
-        st.info("Using local SQLite")
+        storage_mode = st.radio("Storage", ["Supabase Cloud", "Local SQLite"], horizontal=False)
+        st.session_state.use_supabase = storage_mode == "Supabase Cloud"
+        if st.session_state.use_supabase:
+            if init_supabase():
+                st.success("Supabase connected")
+        else:
+            st.info("Using local SQLite")
     st.markdown("---")
     focus_index = st.radio("View strike details for", list(INSTRUMENTS.keys()), horizontal=False)
     selected = st.multiselect(
@@ -811,28 +843,32 @@ with st.sidebar:
     min_history = st.number_input("Minimum previous candles", value=5, min_value=2, max_value=60, step=1)
     repeat_count = st.slider("Telegram repeats", 1, 10, 3)
     st.markdown("---")
-    if st.button("Reconnect Fyers"):
-        st.session_state.auto_login_attempted = False
-        st.session_state.authenticated = False
-        st.session_state.fyers = None
-        st.rerun()
-    if st.button("Clear Local Data"):
-        if os.path.exists(DB_PATH):
-            os.remove(DB_PATH)
-        init_db()
-        st.success("Local radar DB cleared")
-        st.rerun()
+    if app_mode == "Live Radar":
+        if st.button("Reconnect Fyers"):
+            st.session_state.auto_login_attempted = False
+            st.session_state.authenticated = False
+            st.session_state.fyers = None
+            st.rerun()
+        if st.button("Clear Local Data"):
+            if os.path.exists(DB_PATH):
+                os.remove(DB_PATH)
+            init_db()
+            st.success("Local radar DB cleared")
+            st.rerun()
 
-st_autorefresh(interval=60000, key="one_minute_radar_refresh")
+if app_mode == "Live Radar":
+    st_autorefresh(interval=60000, key="one_minute_radar_refresh")
 
-if not st.session_state.authenticated and not st.session_state.auto_login_attempted:
-    st.session_state.auto_login_attempted = True
-    with st.spinner("Auto-connecting to Fyers..."):
-        establish_gateway()
+    if not st.session_state.authenticated and not st.session_state.auto_login_attempted:
+        st.session_state.auto_login_attempted = True
+        with st.spinner("Auto-connecting to Fyers..."):
+            establish_gateway()
 
-if not st.session_state.authenticated or st.session_state.fyers is None:
-    st.warning("Auto-login is pending or failed. Use Reconnect Fyers from the sidebar.")
-    st.stop()
+    if not st.session_state.authenticated or st.session_state.fyers is None:
+        st.warning("Auto-login is pending or failed. Use Reconnect Fyers from the sidebar.")
+        st.stop()
+else:
+    st.session_state.use_supabase = False
 
 if not selected:
     st.warning("Select at least one index in the sidebar.")
@@ -841,51 +877,69 @@ if not selected:
 st.title("1-Min Option Candle Volume Spike Radar")
 st.caption("Tracks ATM ±10 strikes for NIFTY, BANKNIFTY, and SENSEX. Alerts fire when one side's fresh 1-minute volume spikes versus today's average and dominates the opposite side.")
 
-current_ts = minute_floor(get_ist_now())
-status_cards = []
-errors = []
+uploaded_alert_log = pd.DataFrame()
+if app_mode == "Live Radar":
+    current_ts = minute_floor(get_ist_now())
+    status_cards = []
+    errors = []
 
-for name in selected:
-    cfg = INSTRUMENTS[name]
-    spot, atm, rows, error = fetch_option_snapshot(st.session_state.fyers, name, cfg)
-    if error:
-        errors.append(error)
-        continue
-    store_snapshot(current_ts, rows)
-    status_cards.append({"Index": name, "Spot": f"{spot:,.2f}", "ATM": atm, "Tracked Strikes": len(rows)})
+    for name in selected:
+        cfg = INSTRUMENTS[name]
+        spot, atm, rows, error = fetch_option_snapshot(st.session_state.fyers, name, cfg)
+        if error:
+            errors.append(error)
+            continue
+        store_snapshot(current_ts, rows)
+        status_cards.append({"Index": name, "Spot": f"{spot:,.2f}", "ATM": atm, "Tracked Strikes": len(rows)})
 
-if errors:
-    for err in errors:
-        st.warning(err)
+    if errors:
+        for err in errors:
+            st.warning(err)
 
-if status_cards:
-    st.dataframe(pd.DataFrame(status_cards), use_container_width=True, hide_index=True)
+    if status_cards:
+        st.dataframe(pd.DataFrame(status_cards), use_container_width=True, hide_index=True)
 
-snapshot_df = read_snapshots()
-if not snapshot_df.empty:
+    snapshot_df = read_snapshots()
+    if not snapshot_df.empty:
+        snapshot_df["ts"] = pd.to_datetime(snapshot_df["ts"])
+        snapshot_df = snapshot_df[snapshot_df["ts"].dt.date == get_ist_now().date()]
+else:
+    if uploaded_db is None:
+        st.info("Upload a `.db` backup from the sidebar to analyse previous candle-volume data.")
+        st.stop()
+    snapshot_df, uploaded_alert_log = read_uploaded_db(uploaded_db)
+    if snapshot_df.empty:
+        st.error("Uploaded DB does not contain `option_minute_snapshot` data.")
+        st.stop()
     snapshot_df["ts"] = pd.to_datetime(snapshot_df["ts"])
-    snapshot_df = snapshot_df[snapshot_df["ts"].dt.date == get_ist_now().date()]
+    available_days = sorted(snapshot_df["ts"].dt.date.unique())
+    selected_day = st.selectbox("Analysis date", available_days, index=len(available_days) - 1)
+    snapshot_df = snapshot_df[snapshot_df["ts"].dt.date == selected_day]
+    st.success(f"Loaded uploaded DB: {len(snapshot_df):,} rows for {selected_day}")
+
 delta_df = build_deltas(snapshot_df)
 if not delta_df.empty:
     delta_df = delta_df[delta_df["instrument"].isin(selected)]
-alerts = detect_volume_alerts(
-    delta_df,
-    INSTRUMENTS,
-    spike_mult=spike_mult,
-    min_fresh_volume=min_lakh * 100000,
-    dominance_ratio=dominance_ratio,
-    min_history=int(min_history),
-    repeat_count=repeat_count,
-)
 
-for key, instrument, strike, side, message, repeat in alerts:
-    if alert_already_sent(key):
-        continue
-    send_telegram(message, repeat=repeat)
-    mark_alert_sent(key, instrument, strike, side, message)
-    st.toast(message.replace("<b>", "").replace("</b>", "")[:140], icon="🚨")
+if app_mode == "Live Radar":
+    alerts = detect_volume_alerts(
+        delta_df,
+        INSTRUMENTS,
+        spike_mult=spike_mult,
+        min_fresh_volume=min_lakh * 100000,
+        dominance_ratio=dominance_ratio,
+        min_history=int(min_history),
+        repeat_count=repeat_count,
+    )
 
-alert_log = read_alert_log()
+    for key, instrument, strike, side, message, repeat in alerts:
+        if alert_already_sent(key):
+            continue
+        send_telegram(message, repeat=repeat)
+        mark_alert_sent(key, instrument, strike, side, message)
+        st.toast(message.replace("<b>", "").replace("</b>", "")[:140], icon="🚨")
+
+alert_log = read_alert_log() if app_mode == "Live Radar" else uploaded_alert_log
 if not alert_log.empty:
     st.subheader("Live Telegram Alert Feed")
     for _, alert in alert_log.head(12).iterrows():
