@@ -27,159 +27,11 @@ LAST_ENTRY_TIME = datetime.time(14, 0)
 PRODUCT_TYPE = "NRML"
 ORDER_TYPE = 2       
 
-# --- TELEGRAM ALERT CONFIG ---
-TELEGRAM_BOT_TOKEN = st.secrets.get("TELEGRAM_BOT_TOKEN", "")
-TELEGRAM_CHAT_ID   = st.secrets.get("TELEGRAM_CHAT_ID", "")
-
-def send_telegram(msg: str, repeat: int = 1):
-    """Send Telegram alert. repeat=N sends same message N times so you never miss it."""
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        return
-    import time
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    for i in range(repeat):
-        try:
-            requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": msg, "parse_mode": "HTML"}, timeout=5)
-            if repeat > 1 and i < repeat - 1:
-                time.sleep(0.5)  # Small delay between bursts to avoid Telegram flood limit
-        except Exception:
-            pass
-
-def check_reversal_alerts(df_flow, atm_strike, sent_alerts: set,
-                           oi_spike_lots=500, vol_spike_lots=1000,
-                           pcr_bear_thresh=1.5, pcr_bull_thresh=0.6,
-                           consec_intervals=3, repeat_count=10):
-    alerts = []
-    now_str = get_ist_now().strftime("%H:%M")
-    OI_SPIKE  = oi_spike_lots * 25
-    VOL_SPIKE = vol_spike_lots * 25
-
-    strike_deltas = {}
-    for strike in df_flow["strike"].unique():
-        df_s = df_flow[df_flow["strike"] == strike].sort_values("timestamp").reset_index(drop=True)
-        if len(df_s) < 2:
-            continue
-        deltas = []
-        for i in range(1, len(df_s)):
-            deltas.append({
-                "ts":       df_s.iloc[i]["timestamp"],
-                "d_ce_oi":  float(df_s.iloc[i]["ce_oi"] or 0) - float(df_s.iloc[i-1]["ce_oi"] or 0),
-                "d_pe_oi":  float(df_s.iloc[i]["pe_oi"] or 0) - float(df_s.iloc[i-1]["pe_oi"] or 0),
-                "d_ce_vol": float(df_s.iloc[i]["ce_vol"] or 0) - float(df_s.iloc[i-1]["ce_vol"] or 0),
-                "d_pe_vol": float(df_s.iloc[i]["pe_vol"] or 0) - float(df_s.iloc[i-1]["pe_vol"] or 0),
-                "ce_oi":    float(df_s.iloc[i]["ce_oi"] or 0),
-                "pe_oi":    float(df_s.iloc[i]["pe_oi"] or 0),
-            })
-        strike_deltas[strike] = deltas
-
-    for strike, deltas in strike_deltas.items():
-        if not deltas:
-            continue
-        atm_tag = " 🎯ATM" if strike == atm_strike else ""
-        tag     = f"{int(strike)}{atm_tag}"
-        latest  = deltas[-1]
-        d_ce_oi  = latest["d_ce_oi"]
-        d_pe_oi  = latest["d_pe_oi"]
-        d_ce_vol = latest["d_ce_vol"]
-        d_pe_vol = latest["d_pe_vol"]
-        ce_oi    = latest["ce_oi"]
-        pe_oi    = latest["pe_oi"]
-
-        # SIGNAL 1: Single-interval spike
-        if d_pe_oi > OI_SPIKE:
-            key = f"PE_SPIKE_{strike}_{now_str}"
-            if key not in sent_alerts:
-                alerts.append((key,
-                    f"🔴 <b>BEARISH — PUT LOADING</b>\nStrike <b>{tag}</b> | {now_str}\nPE OI +{d_pe_oi/25:,.0f} lots\n⚠️ Bears building — watch DOWNSIDE",
-                    "HIGH", repeat_count))
-
-        if d_ce_oi > OI_SPIKE:
-            key = f"CE_SPIKE_{strike}_{now_str}"
-            if key not in sent_alerts:
-                alerts.append((key,
-                    f"🟢 <b>BULLISH — CALL LOADING</b>\nStrike <b>{tag}</b> | {now_str}\nCE OI +{d_ce_oi/25:,.0f} lots\n⚡ Bulls building — watch UPSIDE",
-                    "HIGH", repeat_count))
-
-        # SIGNAL 2: Consecutive buildup (the smart money early-warning)
-        if len(deltas) >= consec_intervals:
-            last_n = deltas[-consec_intervals:]
-            pe_consec    = sum(1 for d in last_n if d["d_pe_oi"] > OI_SPIKE // 2)
-            ce_consec    = sum(1 for d in last_n if d["d_ce_oi"] > OI_SPIKE // 2)
-            total_pe_built = sum(d["d_pe_oi"] for d in last_n)
-            total_ce_built = sum(d["d_ce_oi"] for d in last_n)
-
-            if pe_consec >= consec_intervals:
-                key = f"PE_CONSEC_{strike}_{now_str}"
-                if key not in sent_alerts:
-                    alerts.append((key,
-                        f"🚨🔴 <b>SMART MONEY — SUSTAINED PUT BUILDUP</b>\nStrike <b>{tag}</b> | {now_str}\n{consec_intervals} consecutive intervals of PUT loading\nTotal PE OI added: +{total_pe_built/25:,.0f} lots\n🎯 BIG MOVE LIKELY — WATCH DOWNSIDE BREAK",
-                        "CRITICAL", repeat_count))
-
-            if ce_consec >= consec_intervals:
-                key = f"CE_CONSEC_{strike}_{now_str}"
-                if key not in sent_alerts:
-                    alerts.append((key,
-                        f"🚨🟢 <b>SMART MONEY — SUSTAINED CALL BUILDUP</b>\nStrike <b>{tag}</b> | {now_str}\n{consec_intervals} consecutive intervals of CALL loading\nTotal CE OI added: +{total_ce_built/25:,.0f} lots\n🎯 BIG MOVE LIKELY — WATCH UPSIDE BREAK",
-                        "CRITICAL", repeat_count))
-
-        # SIGNAL 3: PCR flip
-        if ce_oi > 0 and len(deltas) >= 2 and deltas[-2]["ce_oi"] > 0:
-            pcr_now  = pe_oi / ce_oi
-            pcr_prev = deltas[-2]["pe_oi"] / deltas[-2]["ce_oi"]
-            if pcr_prev < pcr_bear_thresh and pcr_now >= pcr_bear_thresh:
-                key = f"PCR_BEAR_{strike}_{now_str}"
-                if key not in sent_alerts:
-                    alerts.append((key,
-                        f"🔴 <b>PCR FLIP — BEARISH WALL</b>\nStrike <b>{tag}</b> | {now_str}\nPCR {pcr_prev:.2f} → {pcr_now:.2f} (crossed {pcr_bear_thresh})\nPut writers dominating — RESISTANCE forming",
-                        "MEDIUM", repeat_count))
-            if pcr_prev > pcr_bull_thresh and pcr_now <= pcr_bull_thresh:
-                key = f"PCR_BULL_{strike}_{now_str}"
-                if key not in sent_alerts:
-                    alerts.append((key,
-                        f"🟢 <b>PCR FLIP — BULLISH WALL</b>\nStrike <b>{tag}</b> | {now_str}\nPCR {pcr_prev:.2f} → {pcr_now:.2f} (below {pcr_bull_thresh})\nCall writers dominating — SUPPORT forming",
-                        "MEDIUM", repeat_count))
-
-        # SIGNAL 4: Unwinding (reversal signal)
-        if d_ce_oi < -OI_SPIKE and d_ce_vol > VOL_SPIKE:
-            key = f"CE_UNWIND_{strike}_{now_str}"
-            if key not in sent_alerts:
-                alerts.append((key,
-                    f"⚡ <b>CE UNWINDING — CALL SELLERS COVERING</b>\nStrike <b>{tag}</b> | {now_str}\nCE OI {d_ce_oi/25:,.0f} lots | Vol spiking\n🔄 Bears exiting — BULLISH REVERSAL possible",
-                    "HIGH", repeat_count))
-
-        if d_pe_oi < -OI_SPIKE and d_pe_vol > VOL_SPIKE:
-            key = f"PE_UNWIND_{strike}_{now_str}"
-            if key not in sent_alerts:
-                alerts.append((key,
-                    f"⚡ <b>PE UNWINDING — PUT SELLERS COVERING</b>\nStrike <b>{tag}</b> | {now_str}\nPE OI {d_pe_oi/25:,.0f} lots | Vol spiking\n🔄 Bulls exiting — BEARISH REVERSAL possible",
-                    "HIGH", repeat_count))
-
-        # SIGNAL 5: Massive block (waterfall / institutional)
-        MASSIVE = OI_SPIKE * 5
-        if d_ce_oi > MASSIVE:
-            key = f"CE_MASSIVE_{strike}_{now_str}"
-            if key not in sent_alerts:
-                alerts.append((key,
-                    f"🚨🚨 <b>MASSIVE CALL BLOCK — WATERFALL RISK</b>\nStrike <b>{tag}</b> | {now_str}\nCE OI +{d_ce_oi/25:,.0f} lots IN ONE INTERVAL\n📌 Institutional sell block — HIGH PROBABILITY DOWNSIDE",
-                    "CRITICAL", repeat_count))
-        if d_pe_oi > MASSIVE:
-            key = f"PE_MASSIVE_{strike}_{now_str}"
-            if key not in sent_alerts:
-                alerts.append((key,
-                    f"🚨🚨 <b>MASSIVE PUT BLOCK — RALLY RISK</b>\nStrike <b>{tag}</b> | {now_str}\nPE OI +{d_pe_oi/25:,.0f} lots IN ONE INTERVAL\n📌 Institutional support block — HIGH PROBABILITY UPSIDE",
-                    "CRITICAL", repeat_count))
-
-    return alerts
-
 # --- IST TIMEZONE OVERRIDE ---
 IST = datetime.timezone(datetime.timedelta(hours=5, minutes=30))
 def get_ist_now():
     return datetime.datetime.now(IST).replace(tzinfo=None)
 
-if "sent_alerts" not in st.session_state:
-    st.session_state.sent_alerts = set()
-if "alert_log" not in st.session_state:
-    st.session_state.alert_log = []  # List of dicts: {time, severity, message}
 if "fyers_instance" not in st.session_state:
     st.session_state.fyers_instance = None
 if "authenticated" not in st.session_state:
@@ -374,31 +226,6 @@ with st.sidebar:
     st.header("🎛️ Operational Mode Matrix")
     app_mode = st.radio("Select Active Core Node Environment", ["🔴 Live Exchange Node", "📁 Offline DB File Lookback"])
     st.markdown("---")
-    st.header("📲 Telegram Alerts")
-    if not TELEGRAM_BOT_TOKEN:
-        st.warning("Add TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID to Streamlit secrets.")
-    else:
-        st.success("🟢 Telegram Active")
-        if st.button("🔔 Send Test Alert Now"):
-            send_telegram(
-                "✅ <b>Nifty OI Alert System — LIVE</b>\n"
-                "Connected and monitoring. You will receive alerts like this one up to 10x per signal.",
-                repeat=3
-            )
-            st.sidebar.success("Test sent (3x)!")
-    st.markdown("**📡 Alert Settings**")
-    st.session_state["tg_repeat"]  = st.slider("🔁 Repeat each alert (times)", 1, 15, 10, help="Sends same Telegram message N times so you never miss it")
-    st.session_state["consec_n"]   = st.slider("📈 Consecutive intervals for buildup alert", 2, 6, 3, help="How many back-to-back intervals needed to trigger smart money alert")
-    with st.expander("⚙️ OI / PCR Thresholds"):
-        st.session_state["oi_thresh"]  = st.number_input("OI Spike threshold (lots)", value=500, step=50)
-        st.session_state["vol_thresh"] = st.number_input("Vol Spike threshold (lots)", value=1000, step=100)
-        st.session_state["pcr_bear"]   = st.number_input("PCR Bear flip level", value=1.5, step=0.1)
-        st.session_state["pcr_bull"]   = st.number_input("PCR Bull flip level", value=0.6, step=0.1)
-    if st.button("🗑️ Clear Alert History"):
-        st.session_state.sent_alerts = set()
-        st.session_state.alert_log = []
-        st.sidebar.success("Alert history cleared")
-    st.markdown("---")
 
 offline_data_ready = False
 df_history, df_flow = pd.DataFrame(), pd.DataFrame()
@@ -427,18 +254,8 @@ if app_mode == "🔴 Live Exchange Node":
                 if token:
                     st.session_state.fyers_instance = fyersModel.FyersModel(client_id=f"{input_app_id}-100", token=token, is_async=False, log_path="")
                     st.session_state.authenticated = True
-                    st.session_state.auth_creds = (input_fy_id, input_pin, input_totp, input_app_id, input_app_secret, input_redirect)
                     st.success("Synchronized successfully. Node pipelines online.")
                 else: st.session_state.authenticated = False
-
-    # AUTO-RELOGIN: if session state was wiped (e.g. app restart, crash) but we have saved creds, silently reconnect
-    if (not st.session_state.authenticated or st.session_state.fyers_instance is None) and st.session_state.get("auth_creds"):
-        with st.spinner("🔄 Session lost — auto-reconnecting to exchange node..."):
-            fy_id, pin, totp, app_id, app_secret, redirect = st.session_state.auth_creds
-            token = execute_auto_login(fy_id, pin, totp, app_id, "100", app_secret, redirect)
-            if token:
-                st.session_state.fyers_instance = fyersModel.FyersModel(client_id=f"{app_id}-100", token=token, is_async=False, log_path="")
-                st.session_state.authenticated = True
 
     if not st.session_state.authenticated or st.session_state.fyers_instance is None:
         st.info("⚡ System status: Awaiting secure initialization parameters via sidebar.")
@@ -546,8 +363,7 @@ if app_mode == "🔴 Live Exchange Node":
         c.execute("SELECT timestamp FROM flow_history ORDER BY timestamp DESC LIMIT 1")
         last_entry = c.fetchone()
         if last_entry and last_entry[0].date() != get_ist_now().date():
-            c.execute("TRUNCATE TABLE flow_history")
-            c.execute("TRUNCATE TABLE strike_flow")
+            c.execute("TRUNCATE TABLE flow_history; TRUNCATE TABLE strike_flow;")
 
         current_time = get_ist_now()
         c.execute("INSERT INTO flow_history VALUES (%s, %s, %s, %s, %s)", (current_time, total_ce_oi, total_pe_oi, int(atm_call_contract.get("oi",0)), int(matched_put_contract.get("oi",0))))
@@ -558,37 +374,11 @@ if app_mode == "🔴 Live Exchange Node":
                     (current_time, r['strike'], r['ce_oi'], r['ce_vol'], r['ce_ltp'], r['pe_oi'], r['pe_vol'], r['pe_ltp'], r['ce_oich'], r['ce_oichp'], r['pe_oich'], r['pe_oichp'])
                 )
         
-        # --- TELEGRAM REVERSAL ALERTS ---
-        df_flow_live = pd.read_sql_query("SELECT * FROM strike_flow", conn)
-        new_alerts = check_reversal_alerts(
-            df_flow_live, atm_strike, st.session_state.sent_alerts,
-            oi_spike_lots=st.session_state.get("oi_thresh", 500),
-            vol_spike_lots=st.session_state.get("vol_thresh", 1000),
-            pcr_bear_thresh=st.session_state.get("pcr_bear", 1.5),
-            pcr_bull_thresh=st.session_state.get("pcr_bull", 0.6),
-            consec_intervals=st.session_state.get("consec_n", 3),
-            repeat_count=st.session_state.get("tg_repeat", 10),
-        )
-        for key, msg, severity, repeat in new_alerts:
-            send_telegram(msg, repeat=repeat)
-            st.session_state.sent_alerts.add(key)
-            clean_msg = msg.replace("<b>","").replace("</b>","")
-            st.session_state.alert_log.insert(0, {
-                "time": get_ist_now().strftime("%H:%M:%S"),
-                "severity": severity,
-                "message": clean_msg
-            })
-            st.session_state.alert_log = st.session_state.alert_log[:50]  # keep last 50
-            st.toast(clean_msg[:120], icon="🚨")
-
         df_history = pd.read_sql_query("SELECT * FROM flow_history ORDER BY timestamp ASC", conn)
         df_flow = pd.read_sql_query("SELECT * FROM strike_flow", conn)
         conn.close()
     except Exception as e:
-        import traceback
-        st.error(f"🚨 Database Engine Failure: {e}")
-        st.code(traceback.format_exc())
-        st.stop()
+        st.error(f"🚨 Database Engine Failure: {e}"); st.stop()
 
 else:
     # =====================================================================
@@ -720,26 +510,6 @@ with col_backup:
             backup_and_send_telegram(psycopg2.connect(st.secrets["SUPABASE_URI"]))
 
 st.markdown("---")
-
-# ── LIVE ALERT FEED PANEL ─────────────────────────────────────────────────
-if st.session_state.get("alert_log"):
-    st.markdown("### 🚨 Live Alert Feed")
-    severity_colors = {"CRITICAL": "#ff2222", "HIGH": "#ff8c00", "MEDIUM": "#ffd700"}
-    severity_bg     = {"CRITICAL": "#2a0000", "HIGH": "#1a0a00", "MEDIUM": "#1a1500"}
-    for a in st.session_state.alert_log[:10]:  # show last 10
-        sev   = a.get("severity", "MEDIUM")
-        color = severity_colors.get(sev, "#ffd700")
-        bg    = severity_bg.get(sev, "#111")
-        lines = a["message"].split("\n")
-        title = lines[0] if lines else a["message"]
-        body  = " | ".join(lines[1:]) if len(lines) > 1 else ""
-        st.markdown(
-            f"""<div style="background:{bg};border-left:4px solid {color};
-            padding:8px 14px;border-radius:4px;margin-bottom:6px;">
-            <span style="color:{color};font-weight:bold;font-size:13px;">[{a['time']}] {title}</span><br>
-            <span style="color:#ccc;font-size:12px;">{body}</span>
-            </div>""", unsafe_allow_html=True)
-    st.markdown("---")
 
 st.subheader("🔬 NIFTY ATM ±10 Matrix (3-Min Auto-Refresh)")
 if not df_display_matrix.empty:
